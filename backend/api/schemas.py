@@ -22,8 +22,15 @@ class BreaksByType(BaseModel):
 
 
 class SummaryResponse(BaseModel):
+    """Pair-based dashboard metrics (not normalized-leg or match-row counts)."""
+
     total_trades: int
+    pair_count: int = 0
+    broker_leg_count: int = 0
+    desk_leg_count: int = 0
     match_count: int
+    matched_pair_count: int = 0
+    match_row_count: int = 0
     break_count: int
     open_break_count: int
     pct_clean_matched: float

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ApiError, getBreaks } from "../api/client";
-import { BREAK_STATUSES, BREAK_TYPES, type BreakListItem } from "../api/types";
+import { BREAK_STATUSES, BREAK_TYPES, type BreakListItem, type BreakSortField, type SortOrder } from "../api/types";
 import { BreaksTable } from "../components/BreaksTable";
 import { labelize } from "../lib/format";
 
@@ -12,6 +12,8 @@ export function Breaks() {
   const [breakType, setBreakType] = useState("");
   const [tradeDate, setTradeDate] = useState("");
   const [status, setStatus] = useState("open");
+  const [sort, setSort] = useState<BreakSortField>("trade_date");
+  const [order, setOrder] = useState<SortOrder>("desc");
   const [page, setPage] = useState(1);
   const [items, setItems] = useState<BreakListItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -25,10 +27,12 @@ export function Breaks() {
       break_type: breakType || undefined,
       trade_date: tradeDate || undefined,
       status: status || undefined,
+      sort,
+      order,
       page,
       page_size: PAGE_SIZE,
     }),
-    [desk, symbol, breakType, tradeDate, status, page],
+    [desk, symbol, breakType, tradeDate, status, sort, order, page],
   );
 
   useEffect(() => {
@@ -61,7 +65,7 @@ export function Breaks() {
       <div className="page-header">
         <div>
           <h1>Breaks</h1>
-          <p>Filter by desk, symbol, type, and trade date. Open the row for the side-by-side diff.</p>
+          <p>Filter by desk, symbol, type, and trade date. Click a column to sort. Open the row for the side-by-side diff.</p>
         </div>
       </div>
       {error && <div className="banner error">{error}</div>}
@@ -140,7 +144,24 @@ export function Breaks() {
             </select>
           </div>
         </div>
-        {loading ? <p className="loading-state">Loading…</p> : <BreaksTable items={items} />}
+        {loading ? (
+          <p className="loading-state">Loading…</p>
+        ) : (
+          <BreaksTable
+            items={items}
+            sort={sort}
+            order={order}
+            onSort={(field) => {
+              if (field === sort) {
+                setOrder((prev) => (prev === "asc" ? "desc" : "asc"));
+              } else {
+                setSort(field);
+                setOrder(field === "trade_date" || field === "notional" ? "desc" : "asc");
+              }
+              setPage(1);
+            }}
+          />
+        )}
         <div className="pager">
           <button className="btn" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
             Previous

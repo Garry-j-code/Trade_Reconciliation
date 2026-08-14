@@ -14,7 +14,12 @@ export interface BreaksByType {
 
 export interface SummaryResponse {
   total_trades: number;
+  pair_count?: number;
+  broker_leg_count?: number;
+  desk_leg_count?: number;
   match_count: number;
+  matched_pair_count?: number;
+  match_row_count?: number;
   break_count: number;
   open_break_count: number;
   pct_clean_matched: number;
@@ -150,6 +155,16 @@ export interface ApprovalResponse {
   suggestion_id: string | null;
 }
 
+export type BreakSortField =
+  | "break_type"
+  | "status"
+  | "desk"
+  | "symbol"
+  | "trade_date"
+  | "notional";
+
+export type SortOrder = "asc" | "desc";
+
 export interface BreaksQuery {
   desk?: string;
   symbol?: string;
@@ -158,6 +173,8 @@ export interface BreaksQuery {
   date_from?: string;
   date_to?: string;
   status?: string;
+  sort?: BreakSortField;
+  order?: SortOrder;
   page?: number;
   page_size?: number;
 }

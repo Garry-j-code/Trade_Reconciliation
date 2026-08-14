@@ -78,11 +78,16 @@ def test_summary_uses_crud(app, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "backend.api.crud.summary_stats",
         lambda _s: {
-            "total_trades": 100,
-            "match_count": 40,
-            "break_count": 10,
-            "open_break_count": 8,
-            "pct_clean_matched": 80.0,
+            "total_trades": 360,
+            "pair_count": 360,
+            "broker_leg_count": 393,
+            "desk_leg_count": 342,
+            "match_count": 280,
+            "matched_pair_count": 280,
+            "match_row_count": 321,
+            "break_count": 80,
+            "open_break_count": 80,
+            "pct_clean_matched": 77.7778,
             "breaks_by_type": [{"break_type": "price_break", "count": 3}],
             "notional_at_risk": 125000.5,
         },
@@ -91,8 +96,13 @@ def test_summary_uses_crud(app, monkeypatch: pytest.MonkeyPatch) -> None:
         response = client.get("/api/summary")
     assert response.status_code == 200
     body = response.json()
-    assert body["total_trades"] == 100
-    assert body["pct_clean_matched"] == 80.0
+    assert body["total_trades"] == 360
+    assert body["pair_count"] == 360
+    assert body["match_count"] == 280
+    assert body["matched_pair_count"] == 280
+    assert body["match_row_count"] == 321
+    assert body["pct_clean_matched"] == 77.7778
+    assert body["broker_leg_count"] == 393
     assert body["breaks_by_type"][0]["break_type"] == "price_break"
     app.dependency_overrides.clear()
 
@@ -136,6 +146,8 @@ def test_breaks_list_and_filters(app, monkeypatch: pytest.MonkeyPatch) -> None:
                 "date": "2024-06-03",
                 "page": 1,
                 "page_size": 10,
+                "sort": "notional",
+                "order": "asc",
             },
         )
     assert response.status_code == 200
@@ -145,6 +157,19 @@ def test_breaks_list_and_filters(app, monkeypatch: pytest.MonkeyPatch) -> None:
     assert body["items"][0]["desk"] == "EQ-US"
     assert captured["desk"] == "EQ-US"
     assert captured["symbol"] == "AAPL"
+    assert captured["sort"] == "notional"
+    assert captured["order"] == "asc"
+    app.dependency_overrides.clear()
+
+
+def test_breaks_rejects_invalid_sort(app) -> None:
+    def _db():
+        yield object()
+
+    app.dependency_overrides[get_db] = _db
+    with TestClient(app) as client:
+        response = client.get("/api/breaks", params={"sort": "created_at", "order": "sideways"})
+    assert response.status_code == 422
     app.dependency_overrides.clear()
 
 

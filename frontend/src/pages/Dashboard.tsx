@@ -30,7 +30,10 @@ export function Dashboard() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([getSummary(), getBreaks({ status: "open", page: 1, page_size: 8 })])
+    Promise.all([
+      getSummary(),
+      getBreaks({ status: "open", page: 1, page_size: 8, sort: "trade_date", order: "desc" }),
+    ])
       .then(([s, breaks]) => {
         if (!cancelled) {
           setSummary(s);

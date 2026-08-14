@@ -50,6 +50,8 @@ def list_breaks(
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     status: str | None = Query(default=None),
+    sort: crud.BreakSortField = Query(default="trade_date"),
+    order: crud.SortOrder = Query(default="desc"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
 ) -> PaginatedBreaks:
@@ -62,6 +64,8 @@ def list_breaks(
         date_from=date_from,
         date_to=date_to,
         status=status,
+        sort=sort,
+        order=order,
         page=page,
         page_size=page_size,
     )

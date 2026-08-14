@@ -123,6 +123,8 @@ export function getBreaks(query: BreaksQuery = {}): Promise<PaginatedBreaks> {
       date_from: query.date_from,
       date_to: query.date_to,
       status: query.status,
+      sort: query.sort,
+      order: query.order,
       page: query.page,
       page_size: query.page_size,
     })}`,

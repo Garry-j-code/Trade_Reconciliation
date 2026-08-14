@@ -603,6 +603,44 @@ th:last-child {
   border-radius: 0 var(--radius-sm) 0 0;
 }
 
+th.sorted {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+
+.th-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+}
+
+.th-sort:hover {
+  color: var(--accent);
+}
+
+.th-sort.is-active {
+  color: var(--accent-ink);
+}
+
+.sort-ind {
+  font-size: 9px;
+  opacity: 0.55;
+  letter-spacing: 0;
+}
+
+.th-sort.is-active .sort-ind {
+  opacity: 1;
+}
+
 tbody tr {
   transition: background 0.15s ease;
 }
