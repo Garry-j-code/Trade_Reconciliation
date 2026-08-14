@@ -56,9 +56,9 @@ Trade reconciliation platform: two trade records (clearing broker + internal des
   - `cd infra && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt`
   - `cdk synth -c deployFrontendAssets=false`
   - Frontend: `cd frontend && npm ci && npm run build` then `cdk deploy TradeReconAuth TradeReconEc2Api TradeReconFrontend TradeReconPipeline` (`AWS_PROFILE=trade-recon-8948`)
-  - Hosted API: `uv run python infra/ec2_api/put_database_url.py` then deploy as above (`enableEc2Api` / `enableAuth` default true)
-  - Optional API Gateway stub: `cdk deploy TradeReconApi -c enableApi=true`
-  - Tear down: `cdk destroy TradeReconFrontend TradeReconEc2Api TradeReconPipeline TradeReconAuth --force`
+  - Hosted API: `uv run python infra/ec2_api/put_database_url.py` (optional Massive key: `uv run python infra/ec2_api/put_massive_api_key.py`) then deploy as above
+  - Pause (keep data): `uv run stop-billing` — does **not** destroy S3 market-data or RDS
+  - Tear down stacks (does **not** delete market-data S3 or RDS unless you do that separately): `cdk destroy TradeReconFrontend TradeReconEc2Api TradeReconPipeline TradeReconAuth --force`
 
 ## What not to touch without asking
 

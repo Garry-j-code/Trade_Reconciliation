@@ -1,6 +1,6 @@
 # Trade Reconciliation Platform — Project Plan
 
-**Status:** Product hardening — Cognito auth, CloudFront-only API edge, scheduled recon. Steps 1–8 complete. See `infra/README.md`.
+**Status:** Product hardening — Cognito auth, CloudFront-only API edge, weekday **daily blotter** (21:30 UTC), 30-day sunset pause. Steps 1–8 complete. See `infra/README.md`.
 **Purpose of this doc:** the full design record. `AGENTS.md` is the short, operational file coding agents read day-to-day — this file is the "why" behind it. Update this as decisions change; treat it as a living document, not a spec frozen in time.
 
 ---
@@ -257,7 +257,7 @@ trade-recon/
 - [x] 6. Agent — JSON-only output first, then tools one at a time, then skills, then memory
 - [x] 7. React dashboard (local Vite; CloudFront in step 8)
 - [x] 8. **CDK (Python)** — CloudFront+S3 frontend; FastAPI on t4g.micro in the RDS VPC (`TradeReconEc2Api`); no NAT; RDS not `0.0.0.0/0`. See `infra/README.md`.
-- [x] 9. **Product hardening** — Cognito email/password (custom React login); JWT on `/api/*`; `/health` public; CloudFront prefix-list lock on EC2:80; weekday EventBridge → Step Functions → `POST /api/recon/run`; daily stub memory writer via SSM; handover docs.
+- [x] 9. **Product hardening** — Cognito email/password (custom React login); JWT on `/api/*`; `/health` public; CloudFront prefix-list lock on EC2:80; weekday EventBridge 21:30 UTC → SSM `daily-blotter` (dated generate, append-by-session, rematch); daily stub memory writer via SSM; 30-day sunset watcher (stop EC2+RDS, disable rules, no S3/RDS destroy); handover docs.
 
 Check items off as they land. If a coding agent is working from this file, it should update this section when it completes a step.
 
@@ -269,7 +269,7 @@ Things not yet pinned down — flag here rather than let a coding agent guess si
 
 - Terraform vs. CDK — **CDK (Python) chosen**; app lives in `infra/`. Reuses existing S3 market-data bucket and RDS `trade-recon-postgres` (does not create a second RDS). Hosted API is a public-subnet **t4g.micro** (IGW for Bedrock/S3; RDS over private IP). **No NAT Gateway.** EC2:80 is limited to the CloudFront origin-facing prefix list.
 - Auth — **Cognito user pool** (email/password, one seeded demo analyst). Custom login in the React app (not hosted UI). FastAPI verifies JWT on `/api/*`; `/health` stays public.
-- Orchestration — **standard Step Functions**, one Lambda task that POSTs `/api/recon/run` through CloudFront with a scheduler secret. EventBridge weekdays 13:00 UTC. Daily 07:00 UTC memory writer uses SSM Run Command with `--provider stub` (Bedrock cost cap).
+- Orchestration — **standard Step Functions** kept for manual start; weekday EventBridge **21:30 UTC Mon–Fri** runs SSM `daily-blotter` on EC2 (incremental Massive fetch if `MASSIVE_API_KEY` is in SSM, else cache/S3 only). Daily 07:00 UTC memory writer uses SSM `--provider stub`. A daily sunset watcher reads `/trade-recon/product-sunset-date` (default 30 days from deploy, override `SUNSET_DAYS`) and **stops** EC2 + RDS and disables rules — it does not destroy the market-data bucket or RDS. **Stopped RDS still bills for storage** and AWS auto-restarts it after 7 days; delete the instance only if you want ~$0.
 - Exact symbol universe (30–50 tickers) — provisional starter set of 40 liquid US equities pinned in `backend/data/fetch_market_data.py` (`DEFAULT_SYMBOLS`); revisit before demo if needed
 - `root_cause` / `suggested_action` enums — **pinned** in `backend/agent/enums.py` (step 6):
   - `root_cause`: `missing_trade`, `quantity_mismatch`, `price_mismatch`, `duplicate_booking`, `settlement_date_mismatch`, `split_fill`, `corporate_action_timing`, `desk_booking_error`, `broker_reporting_lag`, `calendar_timing`, `data_quality`, `insufficient_evidence`
