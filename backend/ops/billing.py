@@ -227,5 +227,13 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def main_stop() -> int:
+    return main(["stop"])
+
+
+def main_start() -> int:
+    return main(["start"])
+
+
 if __name__ == "__main__":
     sys.exit(main())
