@@ -73,8 +73,8 @@ def test_daily_blotter_two_dates_no_duplicate_ids(
     assert len(may) > 0
 
 
-def test_same_date_generate_same_trade_ids(tiny_cache: Path) -> None:
-    cache = load_market_cache(tiny_cache)
+def test_same_date_generate_same_trade_ids(cache_dir: Path) -> None:
+    cache = load_market_cache(cache_dir)
     cfg = GeneratorConfig(
         cache_dir=cache_dir,
         n_trades=10,

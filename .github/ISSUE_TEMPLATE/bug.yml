@@ -1,0 +1,26 @@
+name: Bug
+description: Something that does not work as specified
+title: "[bug] "
+labels: [bug]
+body:
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: What should happen
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+      description: What happens instead
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduce
+      description: Commands, environment (local vs CloudFront). Do not paste secrets, DATABASE_URL, or .env.
+    validations:
+      required: true

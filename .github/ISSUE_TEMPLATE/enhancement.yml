@@ -1,0 +1,32 @@
+name: Enhancement
+description: Product or infra work that is not a defect
+title: "[enhancement] "
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - pipeline
+        - agent
+        - dashboard
+        - infra
+        - cost
+        - docs
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: Client / ops outcome this enables
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Done when
+      description: Checkable acceptance
+    validations:
+      required: true
