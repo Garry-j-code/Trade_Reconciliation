@@ -33,6 +33,9 @@ match-trades = "backend.pipeline.matcher:main"
 serve-api = "backend.api.main:main"
 investigate-breaks = "backend.agent.cli:main"
 write-agent-memory = "backend.agent.memory_writer:main"
+daily-blotter = "backend.pipeline.daily_blotter:main"
+stop-billing = "backend.ops.billing:main_stop"
+start-product = "backend.ops.billing:main_start"
 
 [build-system]
 requires = ["hatchling"]
