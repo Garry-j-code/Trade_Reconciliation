@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+.env
+.env.local
+.env.*.local
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.coverage
+htmlcov/
+.uv/
+
+# Market data cache (fetched locally; re-fetch with fetch-market-data)
+backend/data/cache/
+data/cache/
+
+# Synthetic trades (regenerate with generate-trades; S3/cache is source of truth)
+backend/data/generated/*
+!backend/data/generated/.gitkeep
+
+# Normalized trades (regenerate with normalize-trades)
+backend/data/normalized/*
+!backend/data/normalized/.gitkeep
+
+# Matcher output (regenerate with match-trades)
+backend/data/matched/*
+!backend/data/matched/.gitkeep
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Terraform / CDK local state
+**/.terraform/
+**/cdk.out/
+infra/.venv/
+infra/node_modules/
+infra/ec2_api/.bundle/
+*.tfstate
+*.tfstate.*
+
+# Secrets / credentials
+*.pem
+*.p12
+*.pfx
+credentials.json
+secrets.json
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Accidental root npm lock (frontend has its own)
+/package-lock.json

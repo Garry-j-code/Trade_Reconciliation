@@ -1,0 +1,5 @@
+# Pin CDK v2 for reproducible synth/deploy. Install with:
+#   cd infra && python3 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+# Or: uv venv && uv pip install -r requirements.txt
+aws-cdk-lib>=2.170.0,<3
+constructs>=10.0.0,<11

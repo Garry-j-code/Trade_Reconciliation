@@ -1,0 +1,26 @@
+"""Emergency-only local Postgres with pgvector. Primary DB is Amazon RDS.
+
+  docker compose up -d
+  # DATABASE_URL=postgresql+psycopg://recon:recon@localhost:5432/trade_recon
+"""
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: trade-recon-postgres
+    environment:
+      POSTGRES_USER: recon
+      POSTGRES_PASSWORD: recon
+      POSTGRES_DB: trade_recon
+    ports:
+      - "5432:5432"
+    volumes:
+      - trade_recon_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recon -d trade_recon"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  trade_recon_pgdata:

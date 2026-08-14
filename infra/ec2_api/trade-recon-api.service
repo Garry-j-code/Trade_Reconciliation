@@ -1,0 +1,16 @@
+[Unit]
+Description=Trade Reconciliation FastAPI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/trade-recon/app
+Environment=PYTHONPATH=/opt/trade-recon/app
+EnvironmentFile=/etc/trade-recon/api.env
+ExecStart=/opt/trade-recon/venv/bin/uvicorn backend.api.main:app --host 0.0.0.0 --port 80 --workers 1 --proxy-headers --forwarded-allow-ips=*
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

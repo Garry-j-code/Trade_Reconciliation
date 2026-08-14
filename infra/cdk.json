@@ -1,0 +1,31 @@
+{
+  "app": "python3 app.py",
+  "watch": {
+    "include": ["**"],
+    "exclude": [
+      "README.md",
+      "cdk*.json",
+      "requirements*.txt",
+      "source.bat",
+      "**/__pycache__",
+      ".venv",
+      "cdk.out"
+    ]
+  },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/core:target-partitions": ["aws"],
+    "enableApi": false,
+    "enableEc2Api": true,
+    "enablePipeline": true,
+    "enableAuth": true,
+    "existingMarketDataBucket": "trade-recon-market-data-gagan-8948-us-east-1",
+    "existingRdsIdentifier": "trade-recon-postgres",
+    "existingVpcId": "vpc-0f92428efe0f6e0c1",
+    "existingRdsSecurityGroupId": "sg-0f0bab4863d9cfe6c",
+    "apiSubnetId": "subnet-03c8c10c72fed25b4",
+    "cloudfrontOrigin": "https://d1a8rtzx54qkw.cloudfront.net",
+    "projectTag": "trade-recon"
+  }
+}
