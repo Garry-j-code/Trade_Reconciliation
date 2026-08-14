@@ -37,6 +37,7 @@ uv run python -m backend.data.fetch_market_data
 
 # Subset / options
 uv run fetch-market-data --symbols AAPL MSFT --lookback-days 365 -v
+uv run fetch-market-data --lookback-days 5 --skip-yfinance   # daily incremental merge
 uv run fetch-market-data --skip-yfinance
 ```
 
@@ -88,15 +89,12 @@ The pipeline and agent must read this cache only — they never call live market
 
 ## Generate synthetic trades
 
-Builds clearing-broker and internal-desk legs from the **cached** Parquet (no live API). Injects non-corporate-action breaks at controlled rates; corporate-action quantity mismatches use **real split factors** from `splits.parquet` (broker adjusted, desk lag). Writes Parquet under `backend/data/generated/` plus a ground-truth manifest.
+Builds clearing-broker and internal-desk legs from the **cached** Parquet (no live API). Default is **one US session** (last completed weekday, skipping holidays). `--seed 42` plus the date is a stable RNG namespace: `2026-08-13` always yields the same trade ids. Injects non-corporate-action breaks at controlled rates; corporate-action quantity mismatches use **real split factors** near that date from `splits.parquet`.
 
 ```bash
-# After fetch-market-data has populated the cache
-uv run generate-trades
-uv run python -m backend.data.generator
-
-# Smaller / reproducible run
-uv run generate-trades --symbols AAPL MSFT --n-trades 100 --seed 42 -v
+uv run generate-trades --trade-date 2026-08-13
+uv run generate-trades                         # last completed US session
+uv run generate-trades --all-history --n-trades 500   # legacy: sample across the cache
 ```
 
 Output:
@@ -117,12 +115,14 @@ Canonical columns: `trade_id`, `source`, `symbol`, `trade_date`, `settlement_dat
 
 ```bash
 # After generate-trades
-uv run normalize-trades
+uv run normalize-trades --trade-date 2026-08-13
 uv run python -m backend.pipeline.ingest
 
 # Custom dirs / skip DB even if DATABASE_URL is set
 uv run normalize-trades --input-dir backend/data/generated --output-dir backend/data/normalized --no-db
 ```
+
+`--trade-date` deletes/replaces **only that session** in `raw_*` / `normalized_trades` (and merges that date in the local Parquet). Other dates stay. Omit it to replace the whole normalized file (legacy).
 
 SQLAlchemy models + reference DDL: `backend/db/models.py`, `backend/db/schema.sql` (tables: `raw_broker_trades`, `raw_desk_trades`, `normalized_trades`, `matches`, `breaks`, plus empty-ready `resolution_suggestions`, `audit_log`, `agent_memory`).
 
@@ -130,7 +130,7 @@ SQLAlchemy models + reference DDL: `backend/db/models.py`, `backend/db/schema.sq
 
 Compares normalized broker vs desk legs. **Exact** (symbol + side + trade_date + settlement + quantity + price), then **tolerance** (same key except price within **5 bps**), then **corporate-action** (qty/price ratio matches a cached split near `execution_date` — treated as a match, not a break), then **split-fill** (one desk block vs broker fills that sum to the desk qty). Leftovers become breaks: missing trade, quantity, price, duplicate, settlement-date mismatch.
 
-Writes `backend/data/matched/matches.parquet` and `breaks.parquet`. When `DATABASE_URL` is set, also replaces RDS `matches` / `breaks`. Reads splits from the market-data cache only — no live API.
+Writes `backend/data/matched/matches.parquet` and `breaks.parquet`. When `DATABASE_URL` is set, rematches the **full** normalized book. `audit_log` is **not** deleted; `breaks.break_id` is stable for the same identity so suggestions can survive. Stale break rows are removed (`audit_log.break_id` SET NULL).
 
 ```bash
 # After normalize-trades
