@@ -119,6 +119,8 @@ export interface PaginatedMatches {
 export interface ReconRunRequest {
   input_dir?: string | null;
   replace?: boolean;
+  mode?: "daily" | "full";
+  trade_date?: string | null;
 }
 
 export interface ReconRunResponse {

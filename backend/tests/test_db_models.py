@@ -45,6 +45,11 @@ def test_raw_legs_preserve_generator_column_names() -> None:
     assert "qty" in desk_cols
 
 
+def test_audit_log_break_id_nullable_on_delete() -> None:
+    col = AuditLog.__table__.c.break_id
+    assert col.nullable is True
+
+
 def test_resolution_suggestion_has_inferred_flag() -> None:
     cols = {c.name for c in ResolutionSuggestion.__table__.columns}
     assert "inferred" in cols

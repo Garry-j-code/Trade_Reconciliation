@@ -4,7 +4,7 @@ Trade reconciliation platform: two trade records (clearing broker + internal des
 
 ## Current phase
 
-**Product hardening (step 9).** Cognito auth, CloudFront-only API edge, weekday recon schedule. Steps 1–8 remain in place: FastAPI on **t4g.micro** in the RDS VPC (`TradeReconEc2Api`). Postgres is reached over private IP (RDS SG: API SG + laptop `/32`, never `0.0.0.0/0`). No NAT Gateway. Details: `infra/README.md`.
+**Product hardening (step 9) + daily blotter / billing pause.** Cognito auth, CloudFront-only API edge, weekday **daily blotter** at 21:30 UTC (after US close). FastAPI on **t4g.micro** in the RDS VPC (`TradeReconEc2Api`). Postgres is reached over private IP (RDS SG: API SG + laptop `/32`, never `0.0.0.0/0`). No NAT Gateway. Details: `infra/README.md`.
 
 ## Stack
 
@@ -13,7 +13,7 @@ Trade reconciliation platform: two trade records (clearing broker + internal des
 - Agent: Amazon Bedrock Converse (`BEDROCK_MODEL_ID` as-is). **Current default is Amazon Nova Lite** `amazon.nova-lite-v1:0` (cost; no Anthropic use-case form). Claude comparison target remains Sonnet 4.5 via `us.anthropic.claude-sonnet-4-5-20250929-v1:0` (cross-region inference profile, not the raw foundation-model id). IAM: `AmazonBedrockFullAccess` is fine for Nova; for Claude also need `bedrock:InvokeModel` (+ `InvokeModelWithResponseStream`) on both `arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-*` and `arn:aws:bedrock:us-east-1:*:inference-profile/us.anthropic.claude-sonnet-4-5-*` (plus `application-inference-profile` if you use a custom profile).
 - Frontend: React, Recharts; production static host via CDK CloudFront + S3
 - Infra: **AWS CDK (Python)** in `infra/` (Terraform not used). Account `894831047463`, profile `trade-recon-8948`, region `us-east-1`. Tag `Project=trade-recon`.
-- Orchestration: EventBridge (weekdays) + standard Step Functions (one task) → `POST /api/recon/run`; daily stub memory writer via SSM Run Command
+- Orchestration: EventBridge weekdays 21:30 UTC → SSM `daily-blotter` on EC2; daily stub memory writer; 30-day sunset watcher (stop EC2+RDS, disable rules)
 - Market data S3 (reuse, do not destroy): `trade-recon-market-data-gagan-8948-us-east-1`
 
 ## Non-negotiable guardrails
@@ -40,10 +40,12 @@ Trade reconciliation platform: two trade records (clearing broker + internal des
 ## Commands
 
 - Backend tests: `uv run pytest`
-- Fetch market data: `uv run fetch-market-data` (or `uv run python -m backend.data.fetch_market_data`)
-- Generate synthetic trades: `uv run generate-trades` (or `uv run python -m backend.data.generator`)
-- Normalize trades: `uv run normalize-trades` (or `uv run python -m backend.pipeline.ingest`)
-- Match trades: `uv run match-trades` (or `uv run python -m backend.pipeline.matcher`)
+- Fetch market data: `uv run fetch-market-data` (or `uv run python -m backend.data.fetch_market_data`). Daily: `--lookback-days 5` (incremental merge; `--force` overwrites; `--skip-cached` skips nonempty files).
+- Generate synthetic trades: `uv run generate-trades --trade-date YYYY-MM-DD` (default last US session; `--all-history` samples the 2y cache). Same `--seed` + date is idempotent.
+- Normalize trades: `uv run normalize-trades --trade-date YYYY-MM-DD` (replace that session only in Parquet/DB)
+- Match trades: `uv run match-trades` (full-book rematch; does **not** delete `audit_log`)
+- Daily blotter (fetch optional + generate + one-day ingest + rematch): `uv run daily-blotter` / `--backfill-sessions 20 --skip-fetch`
+- Pause billing: `uv run stop-billing` or `infra/scripts/stop-product.sh` (stop EC2 + RDS, disable rules). Resume: `uv run start-product` / `infra/scripts/start-product.sh`. Stopped RDS **still bills storage** and AWS may auto-start it after 7 days.
 - Postgres: set `DATABASE_URL` to the RDS instance (see `.env.example`). Local `docker compose` is emergency-only.
 - Sync deps: `uv sync --group dev`
 - Investigate breaks: `uv run investigate-breaks` (`--limit N`, `--break-id`, `--provider stub|bedrock`)

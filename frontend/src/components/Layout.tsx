@@ -37,7 +37,7 @@ export function Layout() {
     setReconMsg(null);
     setReconErr(null);
     try {
-      const result: ReconRunResponse = await runRecon({ replace: true });
+      const result: ReconRunResponse = await runRecon({ mode: "daily" });
       setReconMsg(
         `Recon finished in ${result.elapsed_seconds.toFixed(1)}s — ${result.match_count} matches, ${result.break_count} breaks, ${result.normalized_rows} normalized trades${result.db_loaded ? " (loaded to RDS)" : " (DB not loaded)"}.`,
       );

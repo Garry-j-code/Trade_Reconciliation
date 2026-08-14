@@ -130,7 +130,9 @@ def main() -> None:
             api_base_url=cloudfront_origin,
             instance_id=ec2_api.instance.instance_id if ec2_api else None,
             scheduler_secret=ec2_api.scheduler_secret if ec2_api else None,
-            description="Weekday recon Step Functions + daily memory writer",
+            rds_identifier=rds_id,
+            sunset_days=int(os.environ.get("SUNSET_DAYS") or 30),
+            description="Daily blotter SSM + stub memory writer + 30-day sunset pause",
         )
         if ec2_api:
             pipeline.add_stack_dependency(ec2_api)

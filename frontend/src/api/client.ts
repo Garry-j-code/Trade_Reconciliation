@@ -139,7 +139,7 @@ export function getMatches(page = 1, pageSize = 25): Promise<PaginatedMatches> {
   );
 }
 
-export function runRecon(body: ReconRunRequest = { replace: true }): Promise<ReconRunResponse> {
+export function runRecon(body: ReconRunRequest = { mode: "daily" }): Promise<ReconRunResponse> {
   return request<ReconRunResponse>("/api/recon/run", {
     method: "POST",
     body: JSON.stringify(body),
