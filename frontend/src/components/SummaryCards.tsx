@@ -7,15 +7,11 @@ export function SummaryCards({ summary }: { summary: SummaryResponse }) {
   const matchedPairs = summary.matched_pair_count ?? summary.match_count;
   const brokerLegs = summary.broker_leg_count;
   const deskLegs = summary.desk_leg_count;
-  const matchRows = summary.match_row_count;
   const legLine =
     brokerLegs != null && deskLegs != null
       ? `${formatNumber(brokerLegs)} broker / ${formatNumber(deskLegs)} desk legs`
       : `${formatNumber(matchedPairs)} matched pairs`;
-  const matchLine =
-    matchRows != null && matchRows !== matchedPairs
-      ? `${formatNumber(matchedPairs)} pairs · ${formatNumber(matchRows)} match rows`
-      : `${formatNumber(matchedPairs)} matched pairs`;
+  const matchLine = `${formatNumber(matchedPairs)} pairs`;
 
   return (
     <div className="cards">

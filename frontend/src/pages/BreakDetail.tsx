@@ -10,7 +10,7 @@ import {
 import { TERMINAL_STATUSES, type BreakDetailResponse } from "../api/types";
 import { AgentPanel } from "../components/AgentPanel";
 import { TradeDiff } from "../components/TradeDiff";
-import { formatDate, formatUsd, labelize, shortId } from "../lib/format";
+import { formatDateTime, formatTradeTimestamp, formatUsd, labelize, shortId } from "../lib/format";
 
 export function BreakDetail() {
   const { id } = useParams<{ id: string }>();
@@ -74,7 +74,9 @@ export function BreakDetail() {
       const res = await approveBreak(breakId, {
         note: note.trim() || null,
       });
-      setFlash(`Approved. Status ${res.status}. Audit ${shortId(res.audit_id)}.`);
+      setFlash(
+        `Applied suggested fix. Status ${res.status}. Audit ${shortId(res.audit_id)}.`,
+      );
       setNote("");
       await load();
     } catch (err) {
@@ -150,7 +152,7 @@ export function BreakDetail() {
         </div>
         <div className="meta-item">
           <div className="k">Trade date</div>
-          <div className="v">{formatDate(detail.trade_date)}</div>
+          <div className="v">{formatTradeTimestamp(detail.executed_at, detail.trade_date)}</div>
         </div>
         <div className="meta-item">
           <div className="k">Notional at risk</div>
@@ -169,8 +171,10 @@ export function BreakDetail() {
           <div className="panel">
             <h2>Human decision</h2>
             <p className="muted">
-              Approve or reject writes an audit log on the server. Rejected stays open;
-              resolved/overridden is terminal.
+              Approve applies the suggested fix to the books (for example copies the
+              broker price onto the desk, or voids the extra duplicate), then marks
+              the break resolved and writes an audit log. Reject records your note
+              and does not change trades.
             </p>
             <div className="field grow" style={{ marginTop: 10 }}>
               <label htmlFor="note">Note</label>
@@ -188,14 +192,14 @@ export function BreakDetail() {
                 disabled={locked || busy !== null}
                 onClick={onApprove}
               >
-                {busy === "approve" ? "Approving…" : "Approve"}
+                {busy === "approve" ? "Applying…" : "Apply suggested fix and resolve"}
               </button>
               <button
                 className="btn btn-danger"
                 disabled={locked || busy !== null}
                 onClick={onReject}
               >
-                {busy === "reject" ? "Rejecting…" : "Reject"}
+                {busy === "reject" ? "Rejecting…" : "Reject (do not change books)"}
               </button>
               <button
                 className="btn"
@@ -209,6 +213,26 @@ export function BreakDetail() {
               <p className="placeholder">This break is {detail.status} and cannot be decided again.</p>
             )}
           </div>
+          {(detail.decisions ?? []).length > 0 ? (
+            <div className="panel">
+              <h2>Decision history</h2>
+              <ul className="evidence">
+                {(detail.decisions ?? []).map((d) => (
+                  <li key={d.audit_id}>
+                    <div className="tool-name">
+                      {labelize(d.action)} · {d.actor} · {formatDateTime(d.created_at)}
+                    </div>
+                    <div className="tool-result">
+                      {d.override_note ? `Note: ${d.override_note}` : "No comment."}
+                      {d.suggested_action
+                        ? ` · Suggestion: ${labelize(d.root_cause)} → ${labelize(d.suggested_action)}`
+                        : ""}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

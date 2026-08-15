@@ -33,10 +33,15 @@ export interface BreakListItem {
   status: string;
   symbol: string | null;
   trade_date: string | null;
+  executed_at?: string | null;
   pair_id: string | null;
   desk: string | null;
   notional_at_risk: number;
   created_at: string | null;
+  last_action?: string | null;
+  last_actor?: string | null;
+  last_decided_at?: string | null;
+  last_note?: string | null;
 }
 
 export interface PaginatedBreaks {
@@ -51,7 +56,9 @@ export interface NormalizedTradeOut {
   source: string;
   symbol: string;
   trade_date: string;
+  executed_at?: string | null;
   settlement_date: string;
+  settlement_datetime?: string | null;
   side: string;
   quantity: number;
   price: number;
@@ -87,12 +94,25 @@ export interface SuggestionOut {
   review_route?: string;
 }
 
+export interface AuditDecision {
+  audit_id: string;
+  actor: string;
+  action: string;
+  override_note: string | null;
+  created_at: string | null;
+  suggestion_id: string | null;
+  root_cause: string | null;
+  suggested_action: string | null;
+  explanation: string | null;
+}
+
 export interface BreakDetailResponse {
   break_id: string;
   break_type: string;
   status: string;
   symbol: string | null;
   trade_date: string | null;
+  executed_at?: string | null;
   pair_id: string | null;
   desk: string | null;
   notional_at_risk: number;
@@ -103,6 +123,7 @@ export interface BreakDetailResponse {
   desk_side: SideBySide;
   suggestion: SuggestionOut | null;
   review_routing: ReviewRouting;
+  decisions?: AuditDecision[];
 }
 
 export interface MatchListItem {
@@ -124,6 +145,8 @@ export interface PaginatedMatches {
 export interface ReconRunRequest {
   input_dir?: string | null;
   replace?: boolean;
+  mode?: string;
+  trade_date?: string | null;
 }
 
 export interface ReconRunResponse {
@@ -170,6 +193,8 @@ export interface BreaksQuery {
   symbol?: string;
   break_type?: string;
   trade_date?: string;
+  from_date?: string;
+  to_date?: string;
   date_from?: string;
   date_to?: string;
   status?: string;
@@ -191,8 +216,16 @@ export const BREAK_TYPES = [
 export const BREAK_STATUSES = [
   "open",
   "resolved",
-  "overridden",
   "rejected",
+  "overridden",
+] as const;
+
+export const STATUS_FILTER_OPTIONS = [
+  { value: "open", label: "Open" },
+  { value: "resolved", label: "Resolved" },
+  { value: "rejected", label: "Rejected" },
+  { value: "overridden", label: "Overridden" },
+  { value: "all", label: "All" },
 ] as const;
 
 export const TERMINAL_STATUSES = new Set(["resolved", "overridden"]);

@@ -109,8 +109,13 @@ export function getHealth(): Promise<HealthResponse> {
   return request<HealthResponse>("/health");
 }
 
-export function getSummary(): Promise<SummaryResponse> {
-  return request<SummaryResponse>("/api/summary");
+export function getSummary(query: { from_date?: string; to_date?: string } = {}): Promise<SummaryResponse> {
+  return request<SummaryResponse>(
+    `/api/summary${queryString({
+      from_date: query.from_date,
+      to_date: query.to_date,
+    })}`,
+  );
 }
 
 export function getBreaks(query: BreaksQuery = {}): Promise<PaginatedBreaks> {
@@ -120,6 +125,8 @@ export function getBreaks(query: BreaksQuery = {}): Promise<PaginatedBreaks> {
       symbol: query.symbol,
       break_type: query.break_type,
       date: query.trade_date,
+      from_date: query.from_date,
+      to_date: query.to_date,
       date_from: query.date_from,
       date_to: query.date_to,
       status: query.status,
@@ -141,7 +148,7 @@ export function getMatches(page = 1, pageSize = 25): Promise<PaginatedMatches> {
   );
 }
 
-export function runRecon(body: ReconRunRequest = { replace: true }): Promise<ReconRunResponse> {
+export function runRecon(body: ReconRunRequest = { mode: "rematch" }): Promise<ReconRunResponse> {
   return request<ReconRunResponse>("/api/recon/run", {
     method: "POST",
     body: JSON.stringify(body),

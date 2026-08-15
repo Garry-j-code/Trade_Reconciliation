@@ -49,8 +49,8 @@ export function AgentPanel({ detail }: { detail: BreakDetailResponse }) {
 
       {!hasSuggestion ? (
         <p className="placeholder">
-          No investigation yet. Bedrock is optional — use Investigate to request a
-          suggestion, or approve/reject with a note without one.
+          No investigation yet. Use Investigate to request a suggestion. Approve
+          applies the suggested book fix; Reject leaves the books unchanged.
         </p>
       ) : (
         <>

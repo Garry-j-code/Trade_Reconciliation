@@ -5,6 +5,7 @@ import { BreakDetail } from "./pages/BreakDetail";
 import { Breaks } from "./pages/Breaks";
 import { Dashboard } from "./pages/Dashboard";
 import { Login } from "./pages/Login";
+import { ThemeProvider } from "./ThemeContext";
 import type { ReactElement } from "react";
 
 function RequireAuth({ children }: { children: ReactElement }) {
@@ -21,24 +22,26 @@ function RequireAuth({ children }: { children: ReactElement }) {
 
 export function App() {
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          <Route
-            element={
-              <RequireAuth>
-                <Layout />
-              </RequireAuth>
-            }
-          >
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/breaks" element={<Breaks />} />
-            <Route path="/breaks/:id" element={<BreakDetail />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            <Route
+              element={
+                <RequireAuth>
+                  <Layout />
+                </RequireAuth>
+              }
+            >
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/breaks" element={<Breaks />} />
+              <Route path="/breaks/:id" element={<BreakDetail />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Route>
+          </Routes>
+        </BrowserRouter>
+      </AuthProvider>
+    </ThemeProvider>
   );
 }

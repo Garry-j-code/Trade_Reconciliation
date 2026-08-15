@@ -7,10 +7,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { refreshSession, signIn } from "./cognito";
+import { changePassword as cognitoChangePassword, refreshSession, signIn } from "./cognito";
 import { loadRuntimeConfig, type RuntimeConfig } from "./config";
 import {
   clearTokens,
+  identityFromTokens,
   loadTokens,
   saveTokens,
   tokenExpired,
@@ -21,8 +22,10 @@ type AuthState = {
   ready: boolean;
   config: RuntimeConfig | null;
   tokens: TokenSet | null;
+  displayName: string;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
+  changePassword: (previousPassword: string, proposedPassword: string) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -82,9 +85,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setTokens(null);
   }, []);
 
+  const changeUserPassword = useCallback(
+    async (previousPassword: string, proposedPassword: string) => {
+      if (!config || config.authDisabled) {
+        throw new Error("Password changes are unavailable in local auth-disabled mode.");
+      }
+      let current = tokens;
+      if (!current) {
+        throw new Error("Sign in before changing your password.");
+      }
+      if (tokenExpired(current.accessToken) && current.refreshToken) {
+        current = await refreshSession(config, current.refreshToken);
+        saveTokens(current);
+        setTokens(current);
+      }
+      await cognitoChangePassword(
+        config,
+        current.accessToken,
+        previousPassword,
+        proposedPassword,
+      );
+    },
+    [config, tokens],
+  );
+
+  const displayName = tokens ? identityFromTokens(tokens) : "";
+
   const value = useMemo(
-    () => ({ ready, config, tokens, login, logout }),
-    [ready, config, tokens, login, logout],
+    () => ({
+      ready,
+      config,
+      tokens,
+      displayName,
+      login,
+      logout,
+      changePassword: changeUserPassword,
+    }),
+    [ready, config, tokens, displayName, login, logout, changeUserPassword],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

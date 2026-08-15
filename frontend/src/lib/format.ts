@@ -39,6 +39,32 @@ export function formatDate(value: string | null | undefined): string {
   return value.slice(0, 10);
 }
 
+export const TRADE_TZ = "America/New_York";
+
+export function formatTradeTimestamp(
+  executedAt: string | null | undefined,
+  tradeDate?: string | null,
+): string {
+  if (executedAt) {
+    const d = new Date(executedAt);
+    if (!Number.isNaN(d.getTime())) {
+      return d.toLocaleString("en-US", {
+        timeZone: TRADE_TZ,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+        timeZoneName: "short",
+      });
+    }
+  }
+  if (!tradeDate) return "—";
+  return `${tradeDate.slice(0, 10)} (time not recorded)`;
+}
+
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) return "—";
   const d = new Date(value);
