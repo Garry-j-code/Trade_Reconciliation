@@ -42,9 +42,17 @@ export function Layout() {
     setReconErr(null);
     try {
       const result: ReconRunResponse = await runRecon({ mode: "rematch" });
-      setReconMsg(
-        `Recon finished in ${result.elapsed_seconds.toFixed(1)}s — ${result.match_count} matches, ${result.break_count} breaks, ${result.normalized_rows} trades rematched.`,
-      );
+      let msg = `Rematch finished in ${result.elapsed_seconds.toFixed(1)}s — ${result.match_count} matches, ${result.break_count} breaks, ${result.normalized_rows} trades rematched.`;
+      if (result.investigate_status === "queued") {
+        msg += " Agent investigation is running in the background — refresh Breaks in a minute for new suggestions.";
+      } else if (result.investigate_attempted != null) {
+        msg += ` Investigated ${result.investigate_written ?? 0} of ${result.investigate_attempted} open breaks without suggestions.`;
+        if ((result.investigate_failed ?? 0) > 0) {
+          msg += ` ${result.investigate_failed} failed.`;
+        }
+      }
+      setReconMsg(msg);
+      window.dispatchEvent(new Event("recon:complete"));
     } catch (err) {
       const detail = err instanceof ApiError ? err.detail : "Recon run failed";
       setReconErr(

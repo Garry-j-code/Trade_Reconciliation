@@ -5,6 +5,7 @@ import {
   approveBreak,
   getBreak,
   investigateBreak,
+  overrideBreak,
   rejectBreak,
 } from "../api/client";
 import { TERMINAL_STATUSES, type BreakDetailResponse } from "../api/types";
@@ -17,7 +18,9 @@ export function BreakDetail() {
   const [detail, setDetail] = useState<BreakDetailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState("");
-  const [busy, setBusy] = useState<"approve" | "reject" | "investigate" | null>(null);
+  const [busy, setBusy] = useState<"approve" | "reject" | "override" | "investigate" | null>(
+    null,
+  );
   const [flash, setFlash] = useState<string | null>(null);
 
   async function load() {
@@ -109,6 +112,31 @@ export function BreakDetail() {
     }
   }
 
+  async function onOverride() {
+    const trimmed = note.trim();
+    if (!trimmed) {
+      setError("A note is required to override.");
+      return;
+    }
+    setBusy("override");
+    setFlash(null);
+    setError(null);
+    try {
+      const res = await overrideBreak(breakId, {
+        note: trimmed,
+      });
+      setFlash(
+        `Overridden (books unchanged). Status ${res.status}. Audit ${shortId(res.audit_id)}.`,
+      );
+      setNote("");
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : "Override failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function onInvestigate() {
     setBusy("investigate");
     setFlash(null);
@@ -171,10 +199,10 @@ export function BreakDetail() {
           <div className="panel">
             <h2>Human decision</h2>
             <p className="muted">
-              Approve applies the suggested fix to the books (for example copies the
-              broker price onto the desk, or voids the extra duplicate), then marks
-              the break resolved and writes an audit log. Reject records your note
-              and does not change trades.
+              Approve applies the suggested fix to the books, then marks the break
+              resolved. Reject records that the suggestion is wrong and leaves the
+              break open for another look. Override force-closes the break with your
+              note and never changes trades.
             </p>
             <div className="field grow" style={{ marginTop: 10 }}>
               <label htmlFor="note">Note</label>
@@ -182,7 +210,7 @@ export function BreakDetail() {
                 id="note"
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
-                placeholder="Required for reject. Optional for approve."
+                placeholder="Required for reject and override. Optional for approve."
                 disabled={locked}
               />
             </div>
@@ -199,7 +227,14 @@ export function BreakDetail() {
                 disabled={locked || busy !== null}
                 onClick={onReject}
               >
-                {busy === "reject" ? "Rejecting…" : "Reject (do not change books)"}
+                {busy === "reject" ? "Rejecting…" : "Reject suggestion"}
+              </button>
+              <button
+                className="btn"
+                disabled={locked || busy !== null}
+                onClick={onOverride}
+              >
+                {busy === "override" ? "Overriding…" : "Override (force-close)"}
               </button>
               <button
                 className="btn"

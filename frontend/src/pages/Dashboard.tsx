@@ -40,6 +40,15 @@ export function Dashboard() {
   const [recent, setRecent] = useState<BreakListItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [reconTick, setReconTick] = useState(0);
+
+  useEffect(() => {
+    function onReconComplete(): void {
+      setReconTick((n) => n + 1);
+    }
+    window.addEventListener("recon:complete", onReconComplete);
+    return () => window.removeEventListener("recon:complete", onReconComplete);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,7 +86,7 @@ export function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [fromDate, toDate]);
+  }, [fromDate, toDate, reconTick]);
 
   if (error && !summary) {
     return <div className="banner error">{error}</div>;

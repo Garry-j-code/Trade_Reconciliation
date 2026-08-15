@@ -158,6 +158,10 @@ export interface ReconRunResponse {
   breaks_by_type: Record<string, number>;
   elapsed_seconds: number;
   db_loaded: boolean;
+  investigate_status?: string | null;
+  investigate_attempted?: number | null;
+  investigate_written?: number | null;
+  investigate_failed?: number | null;
 }
 
 export interface ApprovalRequest {

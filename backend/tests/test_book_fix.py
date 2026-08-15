@@ -13,8 +13,14 @@ from sqlalchemy.orm import Session, sessionmaker
 if not hasattr(SQLiteTypeCompiler, "visit_JSONB"):
     SQLiteTypeCompiler.visit_JSONB = SQLiteTypeCompiler.visit_JSON  # type: ignore[attr-defined]
 
-from backend.api.models import AUDIT_APPROVED, AUDIT_REJECTED, BREAK_STATUS_REJECTED
-from backend.api.services import approve_break, reject_break
+from backend.api.models import (
+    AUDIT_APPROVED,
+    AUDIT_OVERRIDDEN,
+    AUDIT_REJECTED,
+    BREAK_STATUS_OVERRIDDEN,
+    BREAK_STATUS_REJECTED,
+)
+from backend.api.services import approve_break, override_break, reject_break
 from backend.db.models import (
     AuditLog,
     Base,
@@ -201,4 +207,37 @@ def test_reject_does_not_mutate() -> None:
     audit = session.scalars(select(AuditLog)).one()
     assert audit.action == AUDIT_REJECTED
     assert audit.override_note == "not the print"
+    session.close()
+
+
+def test_override_force_closes_without_book_fix() -> None:
+    session = _session()
+    broker = _trade(source="broker", trade_id="BRK-1", price=190.0)
+    desk = _trade(source="desk", trade_id="DSK-1", price=191.5)
+    brk = Break(
+        break_id=uuid4(),
+        break_type=BREAK_PRICE,
+        status="open",
+        pair_id="PAIR-PX",
+        broker_trade_ids="BRK-1",
+        desk_trade_ids="DSK-1",
+        symbol="AAPL",
+        trade_date=date(2024, 6, 3),
+        created_at=_now(),
+    )
+    sugg = _suggest(brk, action="amend_price", root="price_mismatch")
+    brk.suggestions = [sugg]
+    session.add_all([broker, desk, brk, sugg])
+    session.flush()
+
+    overridden = override_break(session, brk.break_id, actor="analyst", note="book as-is")
+    assert overridden.status == BREAK_STATUS_OVERRIDDEN
+    desk_row = session.scalars(
+        select(NormalizedTrade).where(NormalizedTrade.trade_id == "DSK-1")
+    ).one()
+    assert desk_row.price == pytest.approx(191.5)
+    assert session.scalars(select(Match)).first() is None
+    audit = session.scalars(select(AuditLog)).one()
+    assert audit.action == AUDIT_OVERRIDDEN
+    assert audit.override_note == "book as-is"
     session.close()

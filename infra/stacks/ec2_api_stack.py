@@ -308,6 +308,9 @@ class Ec2ApiStack(Stack):
 
         CfnOutput(self, "ApiElasticIp", value=eip.attr_public_ip)
         CfnOutput(self, "ApiOriginDns", value=self.api_origin_domain)
+        CfnOutput(self, "ApiInstanceId", value=instance.instance_id)
+        CfnOutput(self, "ApiCodeAssetBucket", value=code_asset.s3_bucket_name)
+        CfnOutput(self, "ApiCodeAssetKey", value=code_asset.s3_object_key)
         CfnOutput(self, "ApiPublicHttpUrl", value=f"http://{eip.attr_public_ip}")
         CfnOutput(self, "ApiHealthUrlDirect", value=f"http://{eip.attr_public_ip}/health")
         CfnOutput(

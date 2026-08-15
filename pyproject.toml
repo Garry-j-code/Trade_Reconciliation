@@ -34,6 +34,8 @@ serve-api = "backend.api.main:main"
 investigate-breaks = "backend.agent.cli:main"
 write-agent-memory = "backend.agent.memory_writer:main"
 daily-blotter = "backend.ops.daily_blotter:main"
+backfill-trade-timestamps = "backend.ops.backfill_trade_timestamps:main"
+reset-closed-breaks = "backend.ops.reset_closed_breaks:main"
 stop-billing = "backend.ops.billing:main_stop"
 start-product = "backend.ops.billing:main_start"
 

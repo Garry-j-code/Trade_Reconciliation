@@ -32,6 +32,16 @@ def test_pipeline_daily_blotter_module_does_not_import_agent() -> None:
     assert "investigate_break" not in src
 
 
+def test_pipeline_matcher_does_not_import_agent() -> None:
+    import inspect
+
+    from backend.pipeline import matcher as matcher_mod
+
+    src = inspect.getsource(matcher_mod)
+    assert "backend.agent" not in src
+    assert "investigate_missing_suggestions" not in src
+
+
 def test_investigate_missing_writes_suggestion_and_skips_existing(
     tmp_path: Path, monkeypatch
 ) -> None:

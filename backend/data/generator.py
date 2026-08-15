@@ -438,7 +438,7 @@ def _price_from_bar(row: Mapping[str, Any], rng: Any) -> float:
     return round(px, 4)
 
 
-def _session_executed_at(
+def session_executed_at(
     trade_date: date, rng: Any, *, fill_index: int = 0
 ) -> datetime:
     """Deterministic NYSE-hours timestamp on ``trade_date`` (America/New_York)."""
@@ -452,9 +452,27 @@ def _session_executed_at(
     )
 
 
-def _settlement_datetime(settle: date) -> datetime:
+def _session_executed_at(
+    trade_date: date, rng: Any, *, fill_index: int = 0
+) -> datetime:
+    return session_executed_at(trade_date, rng, fill_index=fill_index)
+
+
+def settlement_datetime_et(settle: date) -> datetime:
     """End of the NYSE cash session on the settlement date (not midnight)."""
     return datetime(settle.year, settle.month, settle.day, 16, 0, 0, tzinfo=NYSE_TZ)
+
+
+def _settlement_datetime(settle: date) -> datetime:
+    return settlement_datetime_et(settle)
+
+
+def executed_at_from_stable_id(stable_id: str, trade_date: date) -> datetime:
+    """NYSE-session time on ``trade_date``, seeded from ``stable_id`` (idempotent)."""
+    digest = hashlib.sha256(str(stable_id).encode("utf-8")).digest()
+    seed = int.from_bytes(digest[:8], "big") % (2**32)
+    rng = np.random.default_rng(seed)
+    return session_executed_at(trade_date, rng)
 
 
 def _broker_row(

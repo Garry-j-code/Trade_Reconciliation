@@ -23,6 +23,7 @@ from backend.api.models import (
     REVIEW_ONE_CLICK,
     TERMINAL_BREAK_STATUSES,
 )
+from backend.agent.evidence_display import display_evidence_list
 from backend.api.schemas import (
     ApprovalResponse,
     AuditDecisionOut,
@@ -68,6 +69,7 @@ def suggestion_out(break_id: UUID, row: ResolutionSuggestion | None) -> Suggesti
     if row is None:
         return SuggestionOut(break_id=break_id, evidence=[])
     evidence = row.evidence if isinstance(row.evidence, list) else []
+    evidence = display_evidence_list(evidence)
     return SuggestionOut(
         break_id=break_id,
         root_cause=row.root_cause,

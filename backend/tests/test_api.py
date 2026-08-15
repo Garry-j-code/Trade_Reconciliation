@@ -427,6 +427,101 @@ def test_recon_run_timeout(app, monkeypatch: pytest.MonkeyPatch) -> None:
     assert response.status_code == 504
 
 
+def test_recon_run_schedules_investigate_without_blocking(
+    app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "backend.api.routes.recon.run_rematch_from_db_capped",
+        lambda **_k: ReconRunResult(
+            broker_rows=4,
+            desk_rows=4,
+            normalized_rows=8,
+            match_count=3,
+            break_count=2,
+            breaks_by_type={"price_break": 2},
+            elapsed_seconds=0.05,
+            db_loaded=True,
+        ),
+    )
+    called: dict[str, Any] = {}
+
+    def _schedule() -> str:
+        called["scheduled"] = True
+        return "queued"
+
+    monkeypatch.setattr(
+        "backend.api.routes.recon.schedule_investigate_after_rematch", _schedule
+    )
+    with TestClient(app) as client:
+        response = client.post("/api/recon/run", json={"mode": "rematch"})
+    assert response.status_code == 200
+    assert called.get("scheduled") is True
+    body = response.json()
+    assert body["match_count"] == 3
+    assert body["investigate_status"] == "queued"
+    assert body["investigate_attempted"] is None
+    assert body["investigate_written"] is None
+
+
+def test_recon_http_returns_before_slow_investigate(
+    app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    from time import monotonic
+
+    monkeypatch.setattr(
+        "backend.api.routes.recon.run_rematch_from_db_capped",
+        lambda **_k: ReconRunResult(
+            broker_rows=2,
+            desk_rows=2,
+            normalized_rows=4,
+            match_count=1,
+            break_count=1,
+            breaks_by_type={"price_break": 1},
+            elapsed_seconds=0.02,
+            db_loaded=True,
+        ),
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow() -> dict[str, Any]:
+        started.set()
+        release.wait(timeout=5)
+        return {"attempted": 1, "written": 1, "failed": 0, "errors": []}
+
+    monkeypatch.setattr("backend.api.routes.recon.investigate_after_rematch", _slow)
+    with TestClient(app) as client:
+        t0 = monotonic()
+        response = client.post("/api/recon/run", json={"mode": "rematch"})
+        elapsed = monotonic() - t0
+    assert response.status_code == 200
+    assert elapsed < 1.0
+    assert response.json()["investigate_status"] == "queued"
+    assert started.wait(timeout=2)
+    release.set()
+
+
+def test_investigate_after_rematch_swallows_bedrock_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TESTING", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example.invalid/db")
+
+    def _boom(*_a: Any, **_k: Any) -> Any:
+        from backend.agent.providers import BedrockAccessError
+
+        raise BedrockAccessError("bedrock unavailable")
+
+    monkeypatch.setattr("backend.db.session.get_engine", _boom)
+    from backend.api.routes.recon import investigate_after_rematch
+
+    stats = investigate_after_rematch()
+    assert stats["written"] == 0
+    assert stats["failed"] == 0
+    assert stats["errors"]
+
+
 def test_recon_run_ingest_missing_parquet(app, monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(**_k: Any) -> ReconRunResult:
         raise FileNotFoundError("Missing broker trades: /tmp/x")
@@ -599,6 +694,29 @@ def test_override_route_requires_note(app) -> None:
     with TestClient(app) as client:
         response = client.post(f"/api/breaks/{brk.break_id}/override", json={})
     assert response.status_code == 422
+    app.dependency_overrides.clear()
+
+
+def test_override_route_force_closes_and_audits(app) -> None:
+    brk = _open_break()
+    session = _FakeSession(brk)
+
+    def _db():
+        yield session
+
+    app.dependency_overrides[get_db] = _db
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/breaks/{brk.break_id}/override",
+            json={"note": "print is good"},
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == BREAK_STATUS_OVERRIDDEN
+    assert body["action"] == AUDIT_OVERRIDDEN
+    assert brk.status == BREAK_STATUS_OVERRIDDEN
+    assert session.added[-1].action == AUDIT_OVERRIDDEN
+    assert session.added[-1].override_note == "print is good"
     app.dependency_overrides.clear()
 
 

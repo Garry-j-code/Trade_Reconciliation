@@ -34,36 +34,37 @@ export function Login() {
   return (
     <div className="login-shell">
       <form className="login-card" onSubmit={onSubmit}>
-        <div className="brand login-brand">
-          <span className="brand-mark" aria-hidden />
-          Trade Reconciliation
+        <div className="login-header">
+          <div className="brand login-brand">
+            <span className="brand-mark" aria-hidden />
+            Trade Reconciliation
+          </div>
+          <p className="login-kicker">Analyst console</p>
+          <h1 className="login-title">Sign in</h1>
         </div>
-        <p className="login-kicker">Analyst console</p>
-        <h1 className="login-title">Sign in</h1>
-        <p className="muted login-copy">
-          Use the demo analyst credentials issued at handover. Change the password after first login.
-        </p>
         {error && <div className="banner error">{error}</div>}
-        <label className="field">
-          <span>Email</span>
-          <input
-            type="email"
-            autoComplete="username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            required
-          />
-        </label>
-        <label className="field">
-          <span>Password</span>
-          <input
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-        </label>
+        <div className="login-fields">
+          <label className="field">
+            <span>Email</span>
+            <input
+              type="email"
+              autoComplete="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              required
+            />
+          </label>
+          <label className="field">
+            <span>Password</span>
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </label>
+        </div>
         <button className="btn btn-primary login-submit" type="submit" disabled={busy}>
           {busy ? "Signing in…" : "Sign in"}
         </button>

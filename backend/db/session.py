@@ -93,10 +93,6 @@ def ensure_agent_schema_patches(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS executed_at TIMESTAMPTZ"
                 )
             )
-    try:
-        ensure_agent_memory_table(engine)
-    except Exception as exc:  # noqa: BLE001 — sqlite / missing extension
-        logger.warning("Could not patch agent_memory: %s", exc)
         for table in (
             "raw_broker_trades",
             "raw_desk_trades",
@@ -108,6 +104,10 @@ def ensure_agent_schema_patches(engine: Engine) -> None:
                     "ADD COLUMN IF NOT EXISTS settlement_datetime TIMESTAMPTZ"
                 )
             )
+    try:
+        ensure_agent_memory_table(engine)
+    except Exception as exc:  # noqa: BLE001 — sqlite / missing extension
+        logger.warning("Could not patch agent_memory: %s", exc)
 
 
 def ensure_audit_log_survives_break_delete(engine: Engine) -> None:

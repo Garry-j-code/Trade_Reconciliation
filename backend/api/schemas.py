@@ -172,6 +172,10 @@ class ReconRunResponse(BaseModel):
     breaks_by_type: dict[str, int]
     elapsed_seconds: float
     db_loaded: bool
+    investigate_status: str | None = None
+    investigate_attempted: int | None = None
+    investigate_written: int | None = None
+    investigate_failed: int | None = None
 
 
 class ApprovalRequest(BaseModel):

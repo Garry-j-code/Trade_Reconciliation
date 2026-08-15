@@ -32,9 +32,32 @@ function apiUrl(path: string): string {
   return `${BASE}${path}`;
 }
 
+function looksLikeHtml(text: string): boolean {
+  const trimmed = text.trim();
+  return /^<!doctype html/i.test(trimmed) || /<html[\s>]/i.test(trimmed);
+}
+
+function cdnGatewayMessage(status: number, text: string): string | null {
+  const html = looksLikeHtml(text);
+  const fromCloudFront =
+    /cloudfront/i.test(text) || /the request could not be satisfied/i.test(text);
+  if (status === 504 || (html && /gateway timeout|\b504\b/i.test(text))) {
+    return "Gateway timeout: the API did not respond in time. Wait a moment and try again, then refresh the dashboard.";
+  }
+  if (status === 502 || (html && /\b502\b/i.test(text))) {
+    return "Bad gateway: the API origin is unreachable. Try again in a moment.";
+  }
+  if (html && (fromCloudFront || status >= 500)) {
+    return "The CDN returned an HTML error instead of JSON. Try again in a moment.";
+  }
+  return null;
+}
+
 async function readDetail(res: Response): Promise<string> {
   const text = await res.text();
   if (!text) return res.statusText || `HTTP ${res.status}`;
+  const cdn = cdnGatewayMessage(res.status, text);
+  if (cdn) return cdn;
   try {
     const body: unknown = JSON.parse(text);
     if (body && typeof body === "object" && "detail" in body) {
@@ -54,6 +77,9 @@ async function readDetail(res: Response): Promise<string> {
     }
     return text;
   } catch {
+    if (looksLikeHtml(text)) {
+      return `HTTP ${res.status}: the API returned an HTML error page instead of JSON.`;
+    }
     return text;
   }
 }
@@ -170,6 +196,16 @@ export function rejectBreak(
   body: OverrideRequest,
 ): Promise<ApprovalResponse> {
   return request<ApprovalResponse>(`/api/breaks/${id}/reject`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function overrideBreak(
+  id: string,
+  body: OverrideRequest,
+): Promise<ApprovalResponse> {
+  return request<ApprovalResponse>(`/api/breaks/${id}/override`, {
     method: "POST",
     body: JSON.stringify(body),
   });

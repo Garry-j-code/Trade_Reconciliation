@@ -37,6 +37,15 @@ export function Breaks() {
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [reconTick, setReconTick] = useState(0);
+
+  useEffect(() => {
+    function onReconComplete(): void {
+      setReconTick((n) => n + 1);
+    }
+    window.addEventListener("recon:complete", onReconComplete);
+    return () => window.removeEventListener("recon:complete", onReconComplete);
+  }, []);
 
   function patchParams(updates: Record<string, string | null>, resetPage = true) {
     const next = new URLSearchParams(params);
@@ -87,7 +96,7 @@ export function Breaks() {
     return () => {
       cancelled = true;
     };
-  }, [query]);
+  }, [query, reconTick]);
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 

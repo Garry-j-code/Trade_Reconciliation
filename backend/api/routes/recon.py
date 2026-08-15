@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import logging
+import os
+import threading
 from datetime import date
 from pathlib import Path
 from time import monotonic
@@ -30,6 +33,92 @@ from backend.pipeline.recon import (
 from backend.pipeline.daily_blotter import run_daily_blotter
 
 router = APIRouter(tags=["recon"])
+logger = logging.getLogger(__name__)
+
+# CloudFront custom-origin read timeout max is 60s. Rematch must finish inside
+# that window; Bedrock investigation must not share the request.
+API_REMATCH_TIMEOUT_SECONDS = 45.0
+_investigate_lock = threading.Lock()
+
+
+def _empty_investigate() -> dict[str, Any]:
+    return {"attempted": 0, "written": 0, "failed": 0, "errors": []}
+
+
+def investigate_after_rematch() -> dict[str, Any]:
+    """Agent backfill for open breaks with no suggestion. Never raises to the caller.
+
+    Matching stays in ``backend.pipeline``; this is the same wrapper as
+    ``backend.ops.daily_blotter``. One Bedrock failure must not abort rematch.
+    """
+    from backend.agent.auto_investigate import investigate_missing_suggestions
+    from backend.agent.providers import BedrockAccessError
+    from backend.db.session import (
+        database_url_from_env,
+        get_engine,
+        get_session_factory,
+        session_scope,
+    )
+
+    if os.environ.get("TESTING") == "1":
+        return _empty_investigate()
+    url = database_url_from_env()
+    if not url:
+        return _empty_investigate()
+    engine = None
+    try:
+        engine = get_engine(url)
+        factory = get_session_factory(engine)
+        with session_scope(factory) as session:
+            return investigate_missing_suggestions(session, provider_name=None)
+    except BedrockAccessError as exc:
+        logger.warning("Auto-investigate after rematch skipped: %s", exc)
+        return {
+            "attempted": 0,
+            "written": 0,
+            "failed": 0,
+            "errors": [{"break_id": None, "error": str(exc)}],
+        }
+    except Exception as exc:  # noqa: BLE001 — rematch already succeeded
+        logger.exception("Auto-investigate after rematch failed")
+        return {
+            "attempted": 0,
+            "written": 0,
+            "failed": 0,
+            "errors": [{"break_id": None, "error": f"{type(exc).__name__}: {exc}"}],
+        }
+    finally:
+        if engine is not None:
+            engine.dispose()
+
+
+def schedule_investigate_after_rematch() -> str:
+    """Run investigation off the HTTP request so CloudFront does not 504.
+
+    Returns ``queued``. Overlapping rematch clicks share one in-flight job.
+    """
+
+    def _run() -> None:
+        if not _investigate_lock.acquire(blocking=False):
+            logger.info("Auto-investigate already running; skipping duplicate")
+            return
+        try:
+            stats = investigate_after_rematch()
+            logger.info(
+                "Auto-investigate after rematch finished attempted=%s written=%s failed=%s",
+                stats.get("attempted"),
+                stats.get("written"),
+                stats.get("failed"),
+            )
+        finally:
+            _investigate_lock.release()
+
+    threading.Thread(
+        target=_run,
+        name="investigate-after-rematch",
+        daemon=True,
+    ).start()
+    return "queued"
 
 
 @router.get("/me")
@@ -100,7 +189,16 @@ def get_matches(
     )
 
 
-def _recon_response(result: Any) -> ReconRunResponse:
+def _recon_response(
+    result: Any,
+    *,
+    investigate: dict[str, Any] | None = None,
+    investigate_status: str | None = None,
+) -> ReconRunResponse:
+    stats = investigate or {}
+    attempted = stats.get("attempted")
+    written = stats.get("written")
+    failed = stats.get("failed")
     return ReconRunResponse(
         broker_rows=result.broker_rows,
         desk_rows=result.desk_rows,
@@ -110,6 +208,10 @@ def _recon_response(result: Any) -> ReconRunResponse:
         breaks_by_type=result.breaks_by_type,
         elapsed_seconds=result.elapsed_seconds,
         db_loaded=result.db_loaded,
+        investigate_status=investigate_status,
+        investigate_attempted=int(attempted) if attempted is not None else None,
+        investigate_written=int(written) if written is not None else None,
+        investigate_failed=int(failed) if failed is not None else None,
     )
 
 
@@ -123,6 +225,10 @@ def post_recon_run(body: ReconRunRequest | None = None) -> ReconRunResponse:
 
     ``mode=ingest`` / an explicit ``input_dir`` still normalize from Parquet
     (local pipeline). ``mode=daily`` runs the blotter (CLI / EventBridge).
+
+    Hosted rematch returns as soon as matching finishes. Open breaks without
+    suggestions are investigated in a background thread (Bedrock is too slow
+    for the CloudFront origin timeout).
     """
     payload = body or ReconRunRequest()
     input_dir = Path(payload.input_dir) if payload.input_dir else None
@@ -158,8 +264,11 @@ def post_recon_run(body: ReconRunRequest | None = None) -> ReconRunResponse:
                 elapsed_seconds=elapsed,
                 db_loaded=blotter.db_loaded,
             )
-        result = run_rematch_from_db_capped()
-        return _recon_response(result)
+        result = run_rematch_from_db_capped(
+            timeout_seconds=API_REMATCH_TIMEOUT_SECONDS
+        )
+        status = schedule_investigate_after_rematch()
+        return _recon_response(result, investigate_status=status)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except NormalizationError as exc:
