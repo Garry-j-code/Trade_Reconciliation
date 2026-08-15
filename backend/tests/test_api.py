@@ -75,9 +75,11 @@ def test_summary_uses_crud(app, monkeypatch: pytest.MonkeyPatch) -> None:
         yield object()
 
     app.dependency_overrides[get_db] = _db
-    monkeypatch.setattr(
-        "backend.api.crud.summary_stats",
-        lambda _s: {
+    captured: dict[str, Any] = {}
+
+    def _stats(_s: Any, **kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {
             "total_trades": 360,
             "pair_count": 360,
             "broker_leg_count": 393,
@@ -90,11 +92,24 @@ def test_summary_uses_crud(app, monkeypatch: pytest.MonkeyPatch) -> None:
             "pct_clean_matched": 77.7778,
             "breaks_by_type": [{"break_type": "price_break", "count": 3}],
             "notional_at_risk": 125000.5,
-        },
-    )
+        }
+
+    monkeypatch.setattr("backend.api.crud.summary_stats", _stats)
     with TestClient(app) as client:
         response = client.get("/api/summary")
+        ranged = client.get(
+            "/api/summary",
+            params={"from_date": "2024-06-03", "to_date": "2024-06-10"},
+        )
+        inverted = client.get(
+            "/api/summary",
+            params={"from_date": "2024-06-10", "to_date": "2024-06-03"},
+        )
     assert response.status_code == 200
+    assert ranged.status_code == 200
+    assert inverted.status_code == 422
+    assert captured["from_date"] == date(2024, 6, 3)
+    assert captured["to_date"] == date(2024, 6, 10)
     body = response.json()
     assert body["total_trades"] == 360
     assert body["pair_count"] == 360
@@ -136,6 +151,7 @@ def test_breaks_list_and_filters(app, monkeypatch: pytest.MonkeyPatch) -> None:
 
     app.dependency_overrides[get_db] = _db
     monkeypatch.setattr("backend.api.crud.list_breaks", _list)
+    monkeypatch.setattr("backend.api.crud.latest_audits_by_break", lambda *_a, **_k: {})
     with TestClient(app) as client:
         response = client.get(
             "/api/breaks",
@@ -159,6 +175,86 @@ def test_breaks_list_and_filters(app, monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["symbol"] == "AAPL"
     assert captured["sort"] == "notional"
     assert captured["order"] == "asc"
+    assert captured["date_from"] == date(2024, 6, 3)
+    assert captured["date_to"] == date(2024, 6, 3)
+    app.dependency_overrides.clear()
+
+
+def test_breaks_list_date_range_params(app, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def _list(_session: Any, **kwargs: Any) -> tuple[list[Break], int]:
+        calls.append(kwargs)
+        return [], 0
+
+    def _db():
+        yield object()
+
+    app.dependency_overrides[get_db] = _db
+    monkeypatch.setattr("backend.api.crud.list_breaks", _list)
+    monkeypatch.setattr("backend.api.crud.latest_audits_by_break", lambda *_a, **_k: {})
+    with TestClient(app) as client:
+        empty = client.get("/api/breaks")
+        ranged = client.get(
+            "/api/breaks",
+            params={"from_date": "2024-06-03", "to_date": "2024-06-10", "status": "open"},
+        )
+        inverted = client.get(
+            "/api/breaks",
+            params={"from_date": "2024-06-10", "to_date": "2024-06-03"},
+        )
+        aliases = client.get(
+            "/api/breaks",
+            params={"date_from": "2024-06-04", "date_to": "2024-06-05"},
+        )
+    assert empty.status_code == 200
+    assert ranged.status_code == 200
+    assert inverted.status_code == 422
+    assert aliases.status_code == 200
+    assert calls[0]["date_from"] is None
+    assert calls[0]["date_to"] is None
+    assert calls[1]["date_from"] == date(2024, 6, 3)
+    assert calls[1]["date_to"] == date(2024, 6, 10)
+    assert calls[1]["status"] == "open"
+    assert calls[2]["date_from"] == date(2024, 6, 4)
+    assert calls[2]["date_to"] == date(2024, 6, 5)
+    app.dependency_overrides.clear()
+
+
+def test_breaks_list_status_filters(app, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def _list(_session: Any, **kwargs: Any) -> tuple[list[Break], int]:
+        calls.append(kwargs)
+        return [], 0
+
+    def _db():
+        yield object()
+
+    app.dependency_overrides[get_db] = _db
+    monkeypatch.setattr("backend.api.crud.list_breaks", _list)
+    monkeypatch.setattr("backend.api.crud.latest_audits_by_break", lambda *_a, **_k: {})
+    with TestClient(app) as client:
+        resolved = client.get("/api/breaks", params={"status": "resolved"})
+        rejected = client.get("/api/breaks", params={"status": "rejected"})
+        overridden = client.get("/api/breaks", params={"status": "overridden"})
+        all_statuses = client.get("/api/breaks", params={"status": "all"})
+        invalid = client.get("/api/breaks", params={"status": "closed"})
+        open_and_type = client.get(
+            "/api/breaks", params={"status": "open", "break_type": "price_break"}
+        )
+    assert resolved.status_code == 200
+    assert rejected.status_code == 200
+    assert overridden.status_code == 200
+    assert all_statuses.status_code == 200
+    assert invalid.status_code == 422
+    assert open_and_type.status_code == 200
+    assert calls[0]["status"] == "resolved"
+    assert calls[1]["status"] == "rejected"
+    assert calls[2]["status"] == "overridden"
+    assert calls[3]["status"] is None
+    assert calls[4]["status"] == "open"
+    assert calls[4]["break_type"] == "price_break"
     app.dependency_overrides.clear()
 
 
@@ -197,6 +293,7 @@ def test_break_detail_placeholder_suggestion(app, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr("backend.api.crud.get_raw_broker", lambda *_a, **_k: [])
     monkeypatch.setattr("backend.api.crud.get_raw_desk", lambda *_a, **_k: [])
     monkeypatch.setattr("backend.api.crud.latest_suggestion", lambda *_a, **_k: None)
+    monkeypatch.setattr("backend.api.crud.list_audits_for_break", lambda *_a, **_k: [])
     with TestClient(app) as client:
         response = client.get(f"/api/breaks/{break_id}")
     assert response.status_code == 200
@@ -247,7 +344,7 @@ def test_matches_list(app, monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_recon_run_mocked(app, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "backend.api.routes.recon.run_recon_capped",
+        "backend.api.routes.recon.run_rematch_from_db_capped",
         lambda **_k: ReconRunResult(
             broker_rows=10,
             desk_rows=9,
@@ -259,6 +356,13 @@ def test_recon_run_mocked(app, monkeypatch: pytest.MonkeyPatch) -> None:
             db_loaded=True,
         ),
     )
+    called: dict[str, Any] = {}
+
+    def _parquet(**_k: Any) -> ReconRunResult:
+        called["parquet"] = True
+        raise AssertionError("hosted run must not read generated parquet")
+
+    monkeypatch.setattr("backend.api.routes.recon.run_recon_capped", _parquet)
     with TestClient(app) as client:
         response = client.post("/api/recon/run", json={"replace": True})
     assert response.status_code == 200
@@ -266,26 +370,72 @@ def test_recon_run_mocked(app, monkeypatch: pytest.MonkeyPatch) -> None:
     assert body["match_count"] == 7
     assert body["break_count"] == 3
     assert body["db_loaded"] is True
+    assert "parquet" not in called
+
+
+def test_recon_run_default_rematch_without_parquet(
+    app, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "backend.api.routes.recon.run_rematch_from_db_capped",
+        lambda **_k: ReconRunResult(
+            broker_rows=4,
+            desk_rows=4,
+            normalized_rows=8,
+            match_count=3,
+            break_count=1,
+            breaks_by_type={"price_break": 1},
+            elapsed_seconds=0.05,
+            db_loaded=True,
+        ),
+    )
+
+    def _parquet(**_k: Any) -> ReconRunResult:
+        raise FileNotFoundError(
+            "Missing broker trades: /opt/trade-recon/app/backend/data/generated/broker_trades.parquet"
+        )
+
+    monkeypatch.setattr("backend.api.routes.recon.run_recon_capped", _parquet)
+    with TestClient(app) as client:
+        response = client.post("/api/recon/run", json={})
+    assert response.status_code == 200
+    assert response.json()["match_count"] == 3
+    assert response.json()["normalized_rows"] == 8
+
+
+def test_recon_run_empty_book(app, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _empty(**_k: Any) -> ReconRunResult:
+        raise ValueError(
+            "No normalized trades in the database. "
+            "Run the daily blotter (CLI / EventBridge) before rematching."
+        )
+
+    monkeypatch.setattr("backend.api.routes.recon.run_rematch_from_db_capped", _empty)
+    with TestClient(app) as client:
+        response = client.post("/api/recon/run", json={"mode": "rematch"})
+    assert response.status_code == 400
+    assert "normalized trades" in response.json()["detail"]
 
 
 def test_recon_run_timeout(app, monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(**_k: Any) -> ReconRunResult:
         raise ReconTimeoutError("Recon run exceeded 1s cap")
 
-    monkeypatch.setattr("backend.api.routes.recon.run_recon_capped", _boom)
+    monkeypatch.setattr("backend.api.routes.recon.run_rematch_from_db_capped", _boom)
     with TestClient(app) as client:
         response = client.post("/api/recon/run", json={"replace": True})
     assert response.status_code == 504
 
 
-def test_recon_run_missing_parquet(app, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_recon_run_ingest_missing_parquet(app, monkeypatch: pytest.MonkeyPatch) -> None:
     def _boom(**_k: Any) -> ReconRunResult:
         raise FileNotFoundError("Missing broker trades: /tmp/x")
 
     monkeypatch.setattr("backend.api.routes.recon.run_recon_capped", _boom)
     with TestClient(app) as client:
-        response = client.post("/api/recon/run", json={"replace": True})
+        response = client.post("/api/recon/run", json={"mode": "ingest"})
     assert response.status_code == 400
+    assert "Missing broker trades" in response.json()["detail"]
 
 
 class _FakeSession:
@@ -318,17 +468,30 @@ def _open_break() -> Break:
     )
 
 
-def test_approve_without_suggestion_writes_audit() -> None:
+def test_approve_without_suggestion_rejected_for_price_break() -> None:
+    from fastapi import HTTPException
+
     brk = _open_break()
     session = _FakeSession(brk)
-    result = approve_break(session, brk.break_id, actor="analyst")
-    assert result.status == BREAK_STATUS_RESOLVED
-    assert result.action == AUDIT_APPROVED
-    assert result.suggestion_id is None
-    assert len(session.added) == 1
-    assert isinstance(session.added[0], AuditLog)
-    assert session.added[0].action == AUDIT_APPROVED
-    assert session.added[0].suggestion_id is None
+    with pytest.raises(HTTPException) as exc:
+        approve_break(session, brk.break_id, actor="analyst")
+    assert exc.value.status_code == 400
+    assert "Investigate" in str(exc.value.detail)
+    assert session.added == []
+    assert brk.status == "open"
+
+
+def _suggestion_for(brk: Break, *, action: str = "no_action") -> ResolutionSuggestion:
+    return ResolutionSuggestion(
+        suggestion_id=uuid4(),
+        break_id=brk.break_id,
+        root_cause="calendar_timing",
+        confidence=0.4,
+        explanation="stub",
+        suggested_action=action,
+        evidence=[],
+        created_at=datetime.now(timezone.utc),
+    )
 
 
 def test_reject_and_override_require_note_and_audit() -> None:
@@ -359,6 +522,7 @@ def test_approve_conflict_when_already_resolved() -> None:
 
 def test_approve_route_never_auto(app) -> None:
     brk = _open_break()
+    brk.suggestions = [_suggestion_for(brk, action="no_action")]
     session = _FakeSession(brk)
 
     def _db():
@@ -381,6 +545,48 @@ def test_approve_route_never_auto(app) -> None:
     assert missing.status_code == 404
     assert reject.status_code == 409
     app.dependency_overrides.clear()
+
+
+def test_approve_audit_records_actor() -> None:
+    brk = _open_break()
+    brk.suggestions = [_suggestion_for(brk, action="no_action")]
+    session = _FakeSession(brk)
+    result = approve_break(
+        session, brk.break_id, actor="analyst@traderecon.demo", note="looks right"
+    )
+    assert result.status == BREAK_STATUS_RESOLVED
+    audit = session.added[0]
+    assert isinstance(audit, AuditLog)
+    assert audit.actor == "analyst@traderecon.demo"
+    assert audit.override_note == "looks right"
+    assert audit.action == AUDIT_APPROVED
+    assert audit.agent_suggestion_snapshot["suggested_action"] == "no_action"
+
+
+def test_approve_writes_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[str] = []
+
+    def _record(session: object, *, brk: Break, audit: AuditLog, suggestion: object, embed_fn: object = None) -> None:
+        captured.append(audit.action)
+        assert brk.break_id == audit.break_id
+        assert suggestion is not None
+
+    monkeypatch.setattr(
+        "backend.agent.memory_writer.record_human_decision_memory", _record
+    )
+    brk = _open_break()
+    brk.suggestions = [_suggestion_for(brk, action="no_action")]
+    session = _FakeSession(brk)
+    result = approve_break(session, brk.break_id, actor="analyst", note="ok")
+    assert result.action == AUDIT_APPROVED
+    assert session.added[0].action == AUDIT_APPROVED
+    assert captured == ["approved"]
+
+    brk2 = _open_break()
+    brk2.suggestions = [_suggestion_for(brk2, action="no_action")]
+    session2 = _FakeSession(brk2)
+    reject_break(session2, brk2.break_id, actor="analyst", note="nope")
+    assert captured == ["approved", "rejected"]
 
 
 def test_override_route_requires_note(app) -> None:

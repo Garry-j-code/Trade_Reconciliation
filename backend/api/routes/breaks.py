@@ -15,7 +15,7 @@ from backend.agent.runner import (
     investigate_break,
     persist_investigation,
 )
-from backend.agent.tools import ToolContext
+from backend.agent.tools import ToolContext, attach_embedder
 from backend.api import crud
 from backend.api.deps import get_db, resolve_actor
 from backend.api.models import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
@@ -47,6 +47,8 @@ def list_breaks(
     symbol: str | None = Query(default=None),
     break_type: str | None = Query(default=None),
     date: date | None = Query(default=None),
+    from_date: date | None = Query(default=None),
+    to_date: date | None = Query(default=None),
     date_from: date | None = Query(default=None),
     date_to: date | None = Query(default=None),
     status: str | None = Query(default=None),
@@ -55,22 +57,36 @@ def list_breaks(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=DEFAULT_PAGE_SIZE, ge=1, le=MAX_PAGE_SIZE),
 ) -> PaginatedBreaks:
+    start = from_date or date_from
+    end = to_date or date_to
+    try:
+        start, end = crud.resolve_date_range(
+            from_date=start, to_date=end, trade_date=date
+        )
+        status = crud.parse_break_status_filter(status)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     items, total = crud.list_breaks(
         db,
         desk=desk,
         symbol=symbol,
         break_type=break_type,
-        trade_date=date,
-        date_from=date_from,
-        date_to=date_to,
+        trade_date=None,
+        date_from=start,
+        date_to=end,
         status=status,
         sort=sort,
         order=order,
         page=page,
         page_size=page_size,
     )
+    audits = crud.latest_audits_by_break(db, [row.break_id for row in items])
+    payload = [
+        crud.apply_latest_audit(crud.break_to_list_item(row), audits.get(row.break_id))
+        for row in items
+    ]
     return PaginatedBreaks(
-        items=[BreakListItem.model_validate(crud.break_to_list_item(row)) for row in items],
+        items=[BreakListItem.model_validate(item) for item in payload],
         total=total,
         page=page,
         page_size=page_size,
@@ -110,6 +126,7 @@ def investigate_break_endpoint(
         provider = provider_from_env(payload.provider)
     except BedrockAccessError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    attach_embedder(ctx, provider)
     if isinstance(provider, StubProvider) and not provider.default_text:
         provider.default_text = default_stub_output(brk)
     try:

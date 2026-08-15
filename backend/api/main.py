@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -13,7 +14,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.api.auth import require_api_auth
 from backend.api.deps import reset_session_factory
 from backend.api.routes import breaks, health, recon, resolutions
-from backend.db.session import database_url_from_env, get_engine, get_session_factory
+from backend.db.session import (
+    database_url_from_env,
+    ensure_agent_schema_patches,
+    get_engine,
+    get_session_factory,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _is_testing() -> bool:
@@ -46,6 +54,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         engine = get_engine(url)
         app.state.engine = engine
         app.state.session_factory = get_session_factory(engine)
+        try:
+            ensure_agent_schema_patches(engine)
+        except Exception as exc:  # noqa: BLE001 — sqlite / missing table
+            logger.warning("Could not apply schema patches: %s", exc)
     else:
         app.state.engine = None
         app.state.session_factory = None

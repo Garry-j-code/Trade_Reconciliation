@@ -44,10 +44,15 @@ class BreakListItem(BaseModel):
     status: str
     symbol: str | None = None
     trade_date: date | None = None
+    executed_at: datetime | None = None
     pair_id: str | None = None
     desk: str | None = None
     notional_at_risk: float = 0.0
     created_at: datetime | None = None
+    last_action: str | None = None
+    last_actor: str | None = None
+    last_decided_at: datetime | None = None
+    last_note: str | None = None
 
 
 class PaginatedBreaks(BaseModel):
@@ -64,7 +69,9 @@ class NormalizedTradeOut(BaseModel):
     source: str
     symbol: str
     trade_date: date
+    executed_at: datetime | None = None
     settlement_date: date
+    settlement_datetime: datetime | None = None
     side: str
     quantity: float
     price: float
@@ -101,12 +108,25 @@ class SuggestionOut(BaseModel):
     review_route: str = "manual_review"
 
 
+class AuditDecisionOut(BaseModel):
+    audit_id: UUID
+    actor: str
+    action: str
+    override_note: str | None = None
+    created_at: datetime | None = None
+    suggestion_id: UUID | None = None
+    root_cause: str | None = None
+    suggested_action: str | None = None
+    explanation: str | None = None
+
+
 class BreakDetailResponse(BaseModel):
     break_id: UUID
     break_type: str
     status: str
     symbol: str | None = None
     trade_date: date | None = None
+    executed_at: datetime | None = None
     pair_id: str | None = None
     desk: str | None = None
     notional_at_risk: float = 0.0
@@ -117,6 +137,7 @@ class BreakDetailResponse(BaseModel):
     desk_side: SideBySide
     suggestion: SuggestionOut
     review_routing: Literal["one_click", "manual_review"]
+    decisions: list[AuditDecisionOut] = Field(default_factory=list)
 
 
 class MatchListItem(BaseModel):
@@ -138,7 +159,7 @@ class PaginatedMatches(BaseModel):
 class ReconRunRequest(BaseModel):
     input_dir: str | None = None
     replace: bool = False
-    mode: str = "daily"
+    mode: str = "rematch"
     trade_date: date | None = None
 
 

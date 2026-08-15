@@ -27,7 +27,7 @@ class RootCause(str, Enum):
 
 
 class SuggestedAction(str, Enum):
-    """Playbook action for ops — not a mutation of trade tables."""
+    """Playbook action. The agent only proposes it; human Approve applies it."""
 
     ACCEPT_BROKER = "accept_broker"
     ACCEPT_DESK = "accept_desk"

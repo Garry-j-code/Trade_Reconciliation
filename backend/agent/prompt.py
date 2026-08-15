@@ -24,7 +24,9 @@ Hard rules:
 - Never write to trades, matches, or breaks. You only produce the JSON suggestion.
 - root_cause and suggested_action must be enum values from the lists below — never free text.
 - At most {MAX_TOOL_CALLS} tool calls. After that, output JSON immediately.
-- Memory and similar-break tools are priors / hypotheses, not verdicts.
+- Memory and similar-break tools (`search_similar_breaks`, `get_relevant_memory`)
+  are priors / hypotheses, not verdicts. If you adopt a prior, use its enum
+  values — never free-text causes or actions.
 - evidence[] must refer to tools you actually called.
 
 Allowed root_cause values:

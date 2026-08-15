@@ -10,10 +10,12 @@ from backend.agent.memory_writer import (
     _parse_memory_notes,
     compact_old_notes,
     persist_memory_notes,
+    run_memory_writer,
     semantic_notes_from_llm,
+    upsert_decision_memory,
 )
 from backend.agent.providers import EMBEDDING_DIM, StubProvider, stub_embedding
-from backend.db.models import AgentMemory
+from backend.db.models import AgentMemory, AuditLog, Break, ResolutionSuggestion, AuditLog, Break, ResolutionSuggestion
 
 
 def test_stub_embedding_is_1536d_and_deterministic() -> None:
@@ -124,3 +126,98 @@ def test_compact_old_notes_groups_by_scope_month() -> None:
     assert created == 1
     assert deleted == [old]
     assert "Monthly compact" in added[0].content
+
+
+def test_upsert_decision_memory_keeps_row_when_embed_fails() -> None:
+    added: list[AgentMemory] = []
+
+    class _Scalars:
+        def first(self) -> None:
+            return None
+
+    class _Session:
+        def scalars(self, _stmt: object) -> _Scalars:
+            return _Scalars()
+
+        def add(self, obj: AgentMemory) -> None:
+            added.append(obj)
+
+        def flush(self) -> None:
+            return None
+
+    def boom(_text: str) -> list[float]:
+        raise RuntimeError("titan down")
+
+    brk = Break(
+        break_id=uuid4(),
+        break_type="price_break",
+        status="resolved",
+        symbol="AAPL",
+        pair_id="PAIR-1",
+        detail={"desk": "EQ-US", "notional_at_risk": 1200.0},
+    )
+    audit = AuditLog(
+        audit_id=uuid4(),
+        break_id=brk.break_id,
+        actor="analyst",
+        action="approved",
+        override_note="print is good",
+    )
+    sugg = ResolutionSuggestion(
+        suggestion_id=uuid4(),
+        break_id=brk.break_id,
+        root_cause="price_mismatch",
+        confidence=0.8,
+        explanation="x",
+        suggested_action="amend_price",
+        evidence=[],
+    )
+    row = upsert_decision_memory(
+        _Session(),  # type: ignore[arg-type]
+        brk=brk,
+        audit=audit,
+        suggestion=sugg,
+        embed_fn=boom,
+    )
+    assert row is not None
+    assert added[0].embedding is None
+    assert added[0].facts is not None
+    assert added[0].facts["outcome"] == "approved"
+    assert added[0].facts["break_type"] == "price_break"
+    assert added[0].facts["symbol"] == "AAPL"
+    assert added[0].facts["notional_band"] == "<10k"
+    assert added[0].audit_id == audit.audit_id
+    assert "print is good" in added[0].content
+
+
+def test_run_memory_writer_skips_when_caught_up() -> None:
+    class _Session:
+        def execute(self, _stmt: object) -> list[tuple[object, object, object]]:
+            return []
+
+        def scalars(self, _stmt: object) -> object:
+            class _S:
+                def all(self) -> list[object]:
+                    return []
+
+                def first(self) -> None:
+                    return None
+
+            return _S()
+
+        def add(self, _obj: object) -> None:
+            raise AssertionError("caught-up writer must not insert")
+
+        def flush(self) -> None:
+            return None
+
+    stats = run_memory_writer(
+        _Session(),  # type: ignore[arg-type]
+        StubProvider(default_text='{"notes": []}'),
+        embed_fn=stub_embedding,
+        write_semantic=False,
+        skip_if_caught_up=True,
+    )
+    assert stats["skipped"] == 1
+    assert stats["semantic"] == 0
+    assert stats["backfill_caught_up"] == 1

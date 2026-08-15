@@ -122,5 +122,13 @@ CREATE TABLE IF NOT EXISTS agent_memory (
     content          TEXT NOT NULL,
     embedding        VECTOR(1536),
     source_break_ids UUID[],
+    audit_id         UUID UNIQUE REFERENCES audit_log(audit_id) ON DELETE SET NULL,
+    facts            JSONB,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Existing RDS databases created before HITL decision memory:
+-- ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS audit_id UUID;
+-- ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS facts JSONB;
+-- CREATE UNIQUE INDEX IF NOT EXISTS ix_agent_memory_audit_id
+--     ON agent_memory (audit_id) WHERE audit_id IS NOT NULL;
