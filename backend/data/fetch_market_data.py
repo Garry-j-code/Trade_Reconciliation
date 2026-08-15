@@ -29,6 +29,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit, urlunsplit
+from zoneinfo import ZoneInfo
 
 import httpx
 import pandas as pd
@@ -475,6 +476,55 @@ class MassiveClient:
             {"adjusted": str(adjusted).lower(), "sort": "asc", "limit": 50000},
         )
 
+    def fetch_grouped_daily(
+        self,
+        session: date,
+        *,
+        adjusted: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Official US grouped daily file for one session (often ahead of per-ticker range)."""
+        path = f"/v2/aggs/grouped/locale/us/market/stocks/{session.isoformat()}"
+        try:
+            data = self._get(path, {"adjusted": str(adjusted).lower()})
+        except httpx.HTTPStatusError as exc:
+            status = getattr(exc.response, "status_code", None)
+            if status in {404, 403, 429}:
+                logger.warning(
+                    "Grouped daily %s not available (HTTP %s)",
+                    session.isoformat(),
+                    status,
+                )
+                return []
+            raise
+        if isinstance(data, list):
+            return data
+        if not isinstance(data, dict):
+            return []
+        return list(data.get("results") or [])
+
+    def fetch_previous_close(
+        self,
+        ticker: str,
+        *,
+        adjusted: bool = True,
+    ) -> list[dict[str, Any]]:
+        path = f"/v2/aggs/ticker/{ticker}/prev"
+        try:
+            data = self._get(path, {"adjusted": str(adjusted).lower()})
+        except httpx.HTTPStatusError as exc:
+            status = getattr(exc.response, "status_code", None)
+            if status in {404, 403, 429}:
+                logger.warning(
+                    "Previous close for %s not available (HTTP %s)", ticker, status
+                )
+                return []
+            raise
+        if isinstance(data, list):
+            return data
+        if not isinstance(data, dict):
+            return []
+        return list(data.get("results") or [])
+
     def fetch_splits(
         self,
         tickers: tuple[str, ...],
@@ -515,6 +565,52 @@ class MassiveClient:
         if isinstance(data, list):
             return data
         return list(data.get("results") or [])
+
+
+def last_weekday_on_or_before(as_of: date) -> date:
+    """Most recent Mon–Fri calendar day on or before ``as_of`` (not holiday-aware)."""
+    current = as_of
+    while current.weekday() >= 5:
+        current -= timedelta(days=1)
+    return current
+
+
+def _session_dates_from_ts_ms(ts_ms: int) -> set[date]:
+    utc = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+    dates = {utc.date()}
+    dates.add(utc.astimezone(ZoneInfo("America/New_York")).date())
+    return dates
+
+
+def grouped_bars_to_frames(
+    raw: list[dict[str, Any]],
+    session: date,
+    symbols: tuple[str, ...],
+) -> dict[str, pd.DataFrame]:
+    """Map grouped-daily results onto ``session`` (path date), not the bar timestamp."""
+    wanted = {s.upper() for s in symbols}
+    rows_by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for bar in raw:
+        ticker = str(bar.get("T") or bar.get("ticker") or "").upper()
+        if ticker not in wanted:
+            continue
+        rows_by_ticker.setdefault(ticker, []).append(
+            {
+                "ticker": ticker,
+                "date": session.isoformat(),
+                "open": bar.get("o"),
+                "high": bar.get("h"),
+                "low": bar.get("l"),
+                "close": bar.get("c"),
+                "volume": bar.get("v"),
+                "vwap": bar.get("vw"),
+                "transactions": bar.get("n"),
+            }
+        )
+    return {
+        ticker: pd.DataFrame(rows, columns=list(BARS_COLUMNS))
+        for ticker, rows in rows_by_ticker.items()
+    }
 
 
 def bars_to_dataframe(ticker: str, raw: list[dict[str, Any]]) -> pd.DataFrame:
@@ -845,6 +941,95 @@ def write_cross_check_report(
     return {"json": json_path, "csv": csv_path}
 
 
+def _write_merged_bars(
+    cache_dir: Path,
+    symbol: str,
+    incoming: pd.DataFrame,
+) -> None:
+    out_path = bar_path(cache_dir, symbol)
+    existing = pd.DataFrame(columns=list(BARS_COLUMNS))
+    if out_path.is_file():
+        try:
+            existing = read_parquet(out_path)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not read %s (%s); treating as empty", out_path, exc)
+    merged = merge_bar_frames(existing, incoming)
+    write_parquet(merged, out_path)
+
+
+def _backfill_missing_session(
+    config: FetchConfig,
+    massive: MassiveClient,
+    *,
+    session: date,
+) -> list[str]:
+    """Fill a session from grouped daily / previous-close when range aggs lag."""
+    missing = [
+        symbol
+        for symbol in config.symbols
+        if (cached_bar_max_date(config.cache_dir, symbol) or date.min) < session
+    ]
+    if not missing:
+        return []
+    logger.info(
+        "Range aggs missing session %s for %d symbols; trying previous-close then grouped",
+        session.isoformat(),
+        len(missing),
+    )
+    filled: list[str] = []
+    still_missing: list[str] = []
+    for i, symbol in enumerate(missing):
+        if i > 0 and config.symbol_delay_seconds > 0:
+            time.sleep(config.symbol_delay_seconds)
+        raw_prev = massive.fetch_previous_close(symbol)
+        if not raw_prev:
+            still_missing.append(symbol)
+            continue
+        ts_ms = raw_prev[0].get("t")
+        if not isinstance(ts_ms, (int, float)) or session not in _session_dates_from_ts_ms(
+            int(ts_ms)
+        ):
+            still_missing.append(symbol)
+            continue
+        forced = grouped_bars_to_frames(
+            [{**raw_prev[0], "T": symbol.upper()}],
+            session,
+            (symbol.upper(),),
+        ).get(symbol.upper())
+        if forced is None or forced.empty:
+            still_missing.append(symbol)
+            continue
+        _write_merged_bars(config.cache_dir, symbol, forced)
+        filled.append(symbol)
+        logger.info("Backfilled %s for %s from previous-close", session.isoformat(), symbol)
+
+    if still_missing:
+        raw_grouped = massive.fetch_grouped_daily(session)
+        frames = grouped_bars_to_frames(raw_grouped, session, tuple(still_missing))
+        leftover: list[str] = []
+        for symbol in still_missing:
+            frame = frames.get(symbol.upper())
+            if frame is None or frame.empty:
+                leftover.append(symbol)
+                continue
+            _write_merged_bars(config.cache_dir, symbol, frame)
+            filled.append(symbol)
+        still_missing = leftover
+
+    if filled:
+        logger.info(
+            "Backfilled %s bars for %d symbols from grouped/prev",
+            session.isoformat(),
+            len(filled),
+        )
+    else:
+        logger.warning(
+            "Grouped/prev did not provide session %s (range aggs still lag)",
+            session.isoformat(),
+        )
+    return filled
+
+
 def upload_cache_to_s3(
     cache_dir: Path,
     bucket: str,
@@ -960,6 +1145,11 @@ def run_fetch(
                 logger.error("Failed to fetch bars for %s: %s", symbol, exc)
                 failed_symbols.append({"symbol": symbol, "error": str(exc)})
 
+        grouped_filled = _backfill_missing_session(
+            config,
+            massive,
+            session=last_weekday_on_or_before(end),
+        )
 
         logger.info("Fetching splits for %d symbols", len(config.symbols))
         splits_df = splits_to_dataframe(
@@ -1020,6 +1210,7 @@ def run_fetch(
         "bars_skipped": skipped_symbols,
         "bars_incremental": incremental_symbols,
         "bars_failed": failed_symbols,
+        "bars_grouped_backfill": grouped_filled,
         "splits_rows": int(len(splits_df)),
         "dividends_rows": int(len(dividends_df)),
         "calendar_rows": int(len(calendar_df)),

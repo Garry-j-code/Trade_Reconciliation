@@ -252,8 +252,20 @@ def test_generate_trades_schemas_and_clean_pairs(memory_cache: MarketCache) -> N
     assert b["quantity"] == d["qty"]
     assert b["price"] == d["px"]
     assert b["trade_date"] == d["trade_date"]
+    assert b["executed_at"] == d["executed_at"]
+    assert pd.notna(b["executed_at"])
     assert b["settlement_date"] == d["settle_date"]
     assert b["side"] == d["side"]
+    exec_at = pd.Timestamp(b["executed_at"])
+    assert exec_at.tzinfo is not None
+    ny = exec_at.tz_convert("America/New_York")
+    minutes = ny.hour * 60 + ny.minute
+    assert 9 * 60 + 30 <= minutes < 16 * 60
+    settle_at = pd.Timestamp(b["settlement_datetime"])
+    settle_ny = settle_at.tz_convert("America/New_York")
+    assert settle_ny.hour == 16
+    assert settle_ny.minute == 0
+    assert str(b["settlement_datetime"])[:10] == b["settlement_date"]
 
 
 def test_injected_break_types_present(memory_cache: MarketCache) -> None:

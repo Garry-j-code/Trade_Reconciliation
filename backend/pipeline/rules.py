@@ -21,7 +21,7 @@ settlement-date mismatch.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 import pandas as pd
@@ -112,6 +112,29 @@ def as_date(value: Any) -> date | None:
     if pd.isna(parsed):
         return None
     return parsed.date()
+
+
+def as_datetime(value: Any) -> datetime | None:
+    """Coerce to timezone-aware UTC ``datetime``; invalid / NaT → None."""
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return None
+    dt: datetime | None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return None
+        dt = value.to_pydatetime()
+    else:
+        parsed = pd.to_datetime(value, utc=True, errors="coerce")
+        if pd.isna(parsed):
+            return None
+        dt = parsed.to_pydatetime()
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def price_diff_bps(price_a: float, price_b: float) -> float:

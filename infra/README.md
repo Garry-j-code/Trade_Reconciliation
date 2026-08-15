@@ -35,7 +35,7 @@ Python CDK app. **IaC choice: CDK** (not Terraform).
 FastAPI runs on one **t4g.micro** in the same VPC as RDS (`vpc-0f92428efe0f6e0c1`, public subnet `subnet-03c8c10c72fed25b4` / us-east-1a):
 
 - CloudFront talks HTTPS to viewers and **HTTP** to this origin.
-- RDS on **private IP**. Instance role: SSM Session Manager, Bedrock Nova Lite, S3 market-data read, Secrets Manager (scheduler secret), CloudWatch logs.
+- RDS on **private IP**. Instance role: SSM Session Manager, Bedrock Nova Lite, S3 market-data read/write, Secrets Manager (scheduler secret), CloudWatch logs, `ssm:GetParameter` on `/trade-recon/database-url` and `/trade-recon/massive-api-key`.
 - EC2 reaches Bedrock/S3 via the **Internet Gateway** (no NAT).
 
 Store the DB URL (does not print it):
@@ -68,16 +68,28 @@ The React app uses relative `/api` and `/health`. **Do not** set `VITE_API_BASE`
 
 | When | What |
 |---|---|
-| Weekdays 13:00 UTC | EventBridge → Step Functions → Lambda → `POST /api/recon/run` through CloudFront |
-| Daily 07:00 UTC | EventBridge → Lambda → SSM Run Command `write-agent-memory --provider stub --no-semantic` |
+| Weekdays 21:30 UTC | EventBridge → Lambda → SSM `daily-blotter` on EC2 (fetch Massive → S3 Parquet → generate/ingest/match RDS) |
+| Daily 07:00 UTC | EventBridge → Lambda → SSM memory backfill (Titan embed if audits lack a row; skip if caught up; no Converse) |
+| Daily 12:00 UTC | Sunset watcher: stop EC2 + RDS and disable rules if `/trade-recon/product-sunset-date` has passed |
 
-Manual recon: UI **Run reconciliation** (Cognito) or:
+Weekday blotter **fetches on EC2** (not the laptop). It needs SSM SecureString `/trade-recon/massive-api-key` (never commit the value). Put it from local `.env` (`MASSIVE_API_KEY` / `POLYGON_API_KEY`):
 
 ```bash
-aws stepfunctions start-execution \
-  --state-machine-arn "$STATE_MACHINE_ARN" \
-  --input '{"action":"recon"}'
+export AWS_PROFILE=trade-recon-8948
+uv run python infra/ec2_api/put_massive_api_key.py
 ```
+
+The API instance role already has `ssm:GetParameter` (+ KMS decrypt via SSM) on that parameter. Missing the parameter skips Massive and the job fails if S3 bars do not yet include that session. Per-ticker range aggs can lag after the close; fetch then backfills the last weekday from Massive **previous-close** (`/v2/aggs/ticker/{sym}/prev`; grouped daily is not on the current Massive plan) before generate/ingest. After backfill, Parquet is uploaded to S3 (`S3_CACHE_PREFIX=market-data`).
+
+```bash
+export AWS_PROFILE=trade-recon-8948
+uv run stop-billing
+uv run start-product
+```
+
+Stopped RDS still bills storage. AWS auto-starts a stopped DB after 7 days. `cdk destroy` does not delete the market-data bucket or RDS.
+
+Deploy `TradeReconPipeline` with `-c apiInstanceId=<existing-id>` if EC2 replacement is blocked by a cross-stack export. Do not replace the API instance while Pipeline still imports its CloudFormation export.
 
 ## Optional API Gateway stub (`enableApi`)
 

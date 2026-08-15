@@ -28,6 +28,7 @@ from backend.data.fetch_market_data import (
     run_fetch,
     upload_cache_to_s3,
 )
+from backend.data.eod_prev_backfill import backfill_last_weekday_from_prev
 from backend.data.generator import (
     GeneratorConfig,
     closed_market_dates,
@@ -102,8 +103,11 @@ def _maybe_fetch(*, cache_dir: Path, lookback_days: int, skip_fetch: bool) -> di
         force=False,
     )
     summary = run_fetch(config)
+    prev_filled = backfill_last_weekday_from_prev(cache_dir)
+    if prev_filled:
+        summary = {**summary, "prev_backfill": prev_filled}
     bucket = (os.environ.get("S3_CACHE_BUCKET") or "").strip()
-    if bucket and not summary.get("s3_uploaded"):
+    if bucket:
         prefix = (os.environ.get("S3_CACHE_PREFIX") or "market-data").strip()
         region = (
             os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"

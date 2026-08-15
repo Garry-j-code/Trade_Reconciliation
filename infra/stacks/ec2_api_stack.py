@@ -156,7 +156,9 @@ class Ec2ApiStack(Stack):
                 sid="SsmDatabaseUrl",
                 actions=["ssm:GetParameter", "ssm:GetParameters"],
                 resources=[
-                    f"arn:aws:ssm:{self.region}:{self.account}:parameter{ssm_parameter_name}"
+                    f"arn:aws:ssm:{self.region}:{self.account}:parameter{ssm_parameter_name}",
+                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/trade-recon/massive-api-key",
+                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/trade-recon/product-sunset-date",
                 ],
             )
         )
@@ -174,7 +176,7 @@ class Ec2ApiStack(Stack):
             role.add_to_policy(
                 iam.PolicyStatement(
                     sid="MarketDataRead",
-                    actions=["s3:GetObject", "s3:ListBucket"],
+                    actions=["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
                     resources=[
                         f"arn:aws:s3:::{existing_market_data_bucket}",
                         f"arn:aws:s3:::{existing_market_data_bucket}/*",
@@ -270,7 +272,7 @@ class Ec2ApiStack(Stack):
             security_group=api_sg,
             role=role,
             user_data=user_data,
-            user_data_causes_replacement=True,
+            user_data_causes_replacement=False,
             associate_public_ip_address=True,
             require_imdsv2=True,
             detailed_monitoring=False,

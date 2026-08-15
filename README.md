@@ -188,10 +188,20 @@ Uses Amazon Bedrock Converse in `us-east-1` via the default boto3 chain (`AWS_PR
 ```bash
 # After match-trades has written open breaks to RDS
 export AWS_PROFILE=trade-recon-8948
-uv run investigate-breaks --limit 5
+uv run investigate-breaks --limit 80
 uv run investigate-breaks --break-id <uuid> --provider stub
-uv run write-agent-memory --provider stub --no-semantic
+uv run write-agent-memory --embed-provider stub
 ```
+
+Weekday `uv run daily-blotter` (EventBridge/SSM) matches first, then auto-investigates **new open breaks with no suggestion** (Nova Lite, max 5 tools/break). Failures on one break are logged and skipped. Pipeline matching never imports the agent. `--skip-investigate` runs generate/match only.
+
+Backfill existing open breaks without suggestions (laptop or EC2):
+
+```bash
+uv run investigate-breaks --limit 80
+```
+
+Default is missing-suggestion only (`--reinvestigate` to run again). If Bedrock is unreachable from the laptop, run the same command on the API EC2 via SSM.
 
 Clustering: similar open breaks (same `break_type` + symbol + trade date) share one investigation; siblings get a copy with `inferred=true`.
 
@@ -202,7 +212,7 @@ IAM for live Bedrock: `AmazonBedrockFullAccess` is enough for Nova Lite. For Cla
 - `arn:aws:bedrock:us-east-1:*:inference-profile/us.anthropic.claude-sonnet-4-5-*`
 - `arn:aws:bedrock:us-east-1:*:application-inference-profile/*` (only if you use a custom application profile)
 
-Enable model access for Nova Lite (default) and, when comparing, Claude plus Titan Embeddings if you run the memory writer live. Anthropic use-case form is **not** required for Nova.
+Enable model access for Nova Lite (default) and Titan Embeddings (`amazon.titan-embed-text-v1`) for HITL memory. Anthropic use-case form is **not** required for Nova.
 
 ## Local dashboard (React + Vite)
 
@@ -259,9 +269,9 @@ CloudFront is the only public HTTPS entry. EC2:80 accepts the CloudFront origin-
 
 1. Open `https://d1a8rtzx54qkw.cloudfront.net` and sign in (email/password). Demo analyst is seeded by CDK; get the password from SSM `/trade-recon/demo-analyst-password` (SecureString) and **change it**.
 2. Dashboard shows match rate, breaks by type, and notional at risk.
-3. **Run reconciliation** (authenticated) normalizes and matches cached synthetic trades into RDS. Weekdays at **13:00 UTC** the same path runs via EventBridge → Step Functions.
-4. Open a break, **Investigate** (agent writes `resolution_suggestions` only), then **Approve** or **Reject** with a note. Every decision writes `audit_log`.
-5. Daily **07:00 UTC** a stub memory writer runs on the instance (SSM, `--provider stub`) so Bedrock is not billed for the schedule.
+3. **Run reconciliation** runs `mode=daily` (one session; other dates stay). Weekdays **21:30 UTC** EventBridge runs SSM `daily-blotter`.
+4. Open a break, **Investigate** (agent writes `resolution_suggestions` only; may call `search_similar_breaks`), then **Approve** or **Reject** with a note. Every decision writes `audit_log` and upserts `agent_memory` (Titan embed; row kept if embed fails).
+5. Daily **07:00 UTC** a memory backfill runs on the instance (SSM). It embeds any HITL decisions that missed approve-time write, then **skips** when caught up. It does **not** run a nightly Converse job.
 
 Local development: `AUTH_DISABLED=true` in `.env`, `uv run serve-api`, `cd frontend && npm run dev`. Hosted UI always requires Cognito.
 
@@ -275,13 +285,26 @@ Local development: `AUTH_DISABLED=true` in `.env`, `uv run serve-api`, `cd front
 | Cognito | $0 | 50k MAU free tier; one user |
 | Step Functions + Lambda + EventBridge | ~$0 | Few standard transitions/week |
 | Secrets Manager | ~$0.40 per secret | Demo password + scheduler secret |
-| Bedrock Nova Lite | on-demand, only when investigating | Scheduled memory writer is **stub** |
+| Bedrock Nova Lite | on-demand, only when investigating | Titan embed: one small vector per human decision |
+| Bedrock Titan Embed | pennies | Approve-time + 07:00 backfill if behind |
 | NAT Gateway | **$0** | Not deployed |
 | Second RDS | **$0** | Not created |
 
-### Stop billing
+### Pause after ~1 month (keep data)
 
-Tear down product stacks (does **not** destroy reused RDS or the market-data bucket):
+```bash
+export AWS_PROFILE=trade-recon-8948
+uv run stop-billing                 # or ./infra/scripts/stop-product.sh
+uv run start-product                # RDS start takes minutes
+```
+
+Stops EventBridge rules, **stops** EC2, **stops** RDS. Does **not** delete the market-data S3 bucket or RDS.
+
+**Still bills after pause:** RDS storage (and AWS auto-starts a stopped DB after 7 days), CloudFront + frontend S3 (pennies), Secrets Manager (~$0.40/secret), market-data S3 (cheap — do not destroy). For ~$0 delete RDS yourself (snapshots can still bill).
+
+Sunset watcher: SSM `/trade-recon/product-sunset-date` (currently 2026-09-13 from this deploy). Daily 12:00 UTC Lambda runs the same stop path.
+
+### Full stack teardown (still keeps RDS + market-data S3)
 
 ```bash
 export AWS_PROFILE=trade-recon-8948

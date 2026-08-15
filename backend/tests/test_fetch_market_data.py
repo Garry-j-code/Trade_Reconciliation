@@ -7,7 +7,7 @@ Optional live integration can be enabled later with MASSIVE_API_KEY + marker.
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -32,6 +32,8 @@ from backend.data.fetch_market_data import (
     dividends_to_dataframe,
     ensure_cache_layout,
     fetch_yfinance_splits,
+    grouped_bars_to_frames,
+    last_weekday_on_or_before,
     load_config,
     merge_bar_frames,
     parse_retry_after,
@@ -522,6 +524,8 @@ def test_run_fetch_force_overwrites_existing(tmp_path: Path) -> None:
         "/stocks/v1/splits": {"results": [], "status": "OK"},
         "/stocks/v1/dividends": {"results": [], "status": "OK"},
         "/v1/marketstatus/upcoming": [],
+        "/v2/aggs/grouped/locale/us/market/stocks/": {"results": [], "status": "OK"},
+        "/v2/aggs/ticker/AAPL/prev": {"results": [], "status": "OK"},
     }
     http = FakeHttpClient(routes)
     client = MassiveClient("k", client=http)
@@ -703,6 +707,9 @@ def test_run_fetch_writes_expected_layout(tmp_path: Path) -> None:
                 "status": "closed",
             }
         ],
+        "/v2/aggs/grouped/locale/us/market/stocks/": {"results": [], "status": "OK"},
+        "/v2/aggs/ticker/AAPL/prev": {"results": [], "status": "OK"},
+        "/v2/aggs/ticker/MSFT/prev": {"results": [], "status": "OK"},
     }
     http = FakeHttpClient(routes)
     client = MassiveClient("test-key", client=http)
@@ -762,6 +769,8 @@ def test_run_fetch_optional_s3_upload(tmp_path: Path) -> None:
         "/stocks/v1/splits": {"results": [], "status": "OK"},
         "/stocks/v1/dividends": {"results": [], "status": "OK"},
         "/v1/marketstatus/upcoming": [],
+        "/v2/aggs/grouped/locale/us/market/stocks/": {"results": [], "status": "OK"},
+        "/v2/aggs/ticker/AAPL/prev": {"results": [], "status": "OK"},
     }
     client = MassiveClient("k", client=FakeHttpClient(routes))
     config = FetchConfig(
@@ -778,3 +787,89 @@ def test_run_fetch_optional_s3_upload(tmp_path: Path) -> None:
     summary = run_fetch(config, client=client, s3_client=s3, end_date=date(2024, 1, 10))
     assert s3.upload_file.called
     assert any(u.startswith("s3://my-bucket/market-data/") for u in summary["s3_uploaded"])
+
+
+def test_last_weekday_skips_weekend() -> None:
+    assert last_weekday_on_or_before(date(2026, 8, 15)) == date(2026, 8, 14)
+    assert last_weekday_on_or_before(date(2026, 8, 14)) == date(2026, 8, 14)
+
+
+def test_run_fetch_grouped_daily_backfills_lagging_range(tmp_path: Path) -> None:
+    """Per-ticker range stops at 13 Aug; grouped daily supplies the 14 Aug session."""
+    ts_13 = int(datetime(2026, 8, 13, tzinfo=timezone.utc).timestamp() * 1000)
+    ts_14 = int(datetime(2026, 8, 14, tzinfo=timezone.utc).timestamp() * 1000)
+    routes = {
+        "/v2/aggs/ticker/AAPL/range/": {
+            "results": [_agg_bar(ts_13, 220.0)],
+            "status": "OK",
+        },
+        "/v2/aggs/ticker/AAPL/prev": {"results": [], "status": "OK"},
+        "/v2/aggs/grouped/locale/us/market/stocks/": {
+            "results": [
+                {
+                    "T": "AAPL",
+                    "o": 221.0,
+                    "h": 222.0,
+                    "l": 220.0,
+                    "c": 221.5,
+                    "v": 1_000_000,
+                    "vw": 221.2,
+                    "n": 4000,
+                    "t": ts_14,
+                }
+            ],
+            "status": "OK",
+        },
+        "/stocks/v1/splits": {"results": [], "status": "OK"},
+        "/stocks/v1/dividends": {"results": [], "status": "OK"},
+        "/v1/marketstatus/upcoming": [],
+    }
+    http = FakeHttpClient(routes)
+    client = MassiveClient("k", client=http)
+    config = FetchConfig(
+        api_key="k",
+        symbols=("AAPL",),
+        cache_dir=tmp_path,
+        lookback_days=5,
+        skip_yfinance=True,
+        incremental=True,
+        symbol_delay_seconds=0.0,
+    )
+    summary = run_fetch(
+        config,
+        client=client,
+        end_date=date(2026, 8, 15),
+        sleep=lambda _: None,
+    )
+    assert "AAPL" in summary["bars_grouped_backfill"]
+    aapl = read_parquet(tmp_path / "bars" / "AAPL.parquet")
+    aapl["date"] = pd.to_datetime(aapl["date"]).dt.date
+    dates = set(aapl["date"].tolist())
+    assert date(2026, 8, 13) in dates
+    assert date(2026, 8, 14) in dates
+    grouped_urls = [u for u, _p, _h in http.calls if "grouped" in u]
+    assert grouped_urls
+    assert "2026-08-14" in grouped_urls[0]
+
+
+def test_grouped_bars_to_frames_uses_session_date_not_timestamp() -> None:
+    ts_wrong = int(datetime(2026, 8, 13, 20, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    frames = grouped_bars_to_frames(
+        [
+            {
+                "T": "AAPL",
+                "o": 1,
+                "h": 2,
+                "l": 1,
+                "c": 1.5,
+                "v": 10,
+                "vw": 1.4,
+                "n": 3,
+                "t": ts_wrong,
+            }
+        ],
+        date(2026, 8, 14),
+        ("AAPL",),
+    )
+    df = frames["AAPL"]
+    assert df.iloc[0]["date"] == "2026-08-14"

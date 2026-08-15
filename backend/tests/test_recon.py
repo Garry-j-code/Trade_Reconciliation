@@ -20,6 +20,7 @@ from backend.pipeline.recon import (
     recon_timeout_seconds,
     run_recon,
     run_recon_capped,
+    run_rematch_from_db,
 )
 from backend.pipeline.rules import BREAK_PRICE
 
@@ -177,3 +178,59 @@ def test_run_recon_load_db_requires_url(
             matched_output_dir=tmp_path / "m",
             load_db=True,
         )
+
+
+def test_run_rematch_from_db_requires_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with pytest.raises(ValueError, match="DATABASE_URL"):
+        run_rematch_from_db()
+
+
+def test_run_rematch_from_db_empty_book(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "backend.pipeline.recon.read_normalized_from_db",
+        lambda _url: pd.DataFrame(),
+    )
+    with pytest.raises(ValueError, match="No normalized trades"):
+        run_rematch_from_db(
+            database_url="postgresql://example.invalid/trade_recon"
+        )
+
+
+def test_run_rematch_from_db_skips_parquet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    book = pd.DataFrame(
+        {
+            "source": ["broker", "desk"],
+            "trade_id": ["B1", "D1"],
+        }
+    )
+    monkeypatch.setattr(
+        "backend.pipeline.recon.read_normalized_from_db",
+        lambda _url: book,
+    )
+
+    class _Match:
+        match_rows = 1
+        break_rows = 0
+        summary = {"break_type_counts": {}}
+        db_loaded = True
+
+    captured: dict[str, Any] = {}
+
+    def _match(**kwargs: Any) -> _Match:
+        captured.update(kwargs)
+        return _Match()
+
+    monkeypatch.setattr("backend.pipeline.recon.run_match", _match)
+    result = run_rematch_from_db(
+        database_url="postgresql://example.invalid/trade_recon"
+    )
+    assert result.normalized_rows == 2
+    assert result.broker_rows == 1
+    assert result.desk_rows == 1
+    assert result.match_count == 1
+    assert captured["from_db"] is True
+    assert captured["write_parquet"] is False
+    assert captured["load_db"] is True

@@ -95,8 +95,22 @@ def test_normalize_broker_maps_columns_and_source(broker_df: pd.DataFrame) -> No
     assert row["account"] == "CLR-001"
     assert row["executing_party"] == "XNYS"
     assert row["pair_id"] == "PAIR-001"
+    assert pd.isna(row["executed_at"])
+    assert pd.isna(row["settlement_datetime"])
     assert isinstance(row["raw_payload"], dict)
     assert row["raw_payload"]["broker_trade_id"] == "BRK-001"
+
+
+def test_normalize_copies_executed_at_and_settlement_datetime(broker_df: pd.DataFrame) -> None:
+    broker_df = broker_df.copy()
+    broker_df["executed_at"] = "2024-06-03T10:15:30-04:00"
+    broker_df["settlement_datetime"] = "2024-06-04T16:00:00-04:00"
+    out = normalize_broker_trades(broker_df)
+    exec_ts = pd.Timestamp(out.iloc[0]["executed_at"])
+    settle_ts = pd.Timestamp(out.iloc[0]["settlement_datetime"])
+    assert exec_ts.tzinfo is not None
+    assert settle_ts.tzinfo is not None
+    assert out.iloc[0]["settlement_date"] == date(2024, 6, 4)
 
 
 def test_normalize_desk_maps_columns_and_source(desk_df: pd.DataFrame) -> None:

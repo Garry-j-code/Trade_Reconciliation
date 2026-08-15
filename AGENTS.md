@@ -13,7 +13,7 @@ Trade reconciliation platform: two trade records (clearing broker + internal des
 - Agent: Amazon Bedrock Converse (`BEDROCK_MODEL_ID` as-is). **Current default is Amazon Nova Lite** `amazon.nova-lite-v1:0` (cost; no Anthropic use-case form). Claude comparison target remains Sonnet 4.5 via `us.anthropic.claude-sonnet-4-5-20250929-v1:0` (cross-region inference profile, not the raw foundation-model id). IAM: `AmazonBedrockFullAccess` is fine for Nova; for Claude also need `bedrock:InvokeModel` (+ `InvokeModelWithResponseStream`) on both `arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-5-*` and `arn:aws:bedrock:us-east-1:*:inference-profile/us.anthropic.claude-sonnet-4-5-*` (plus `application-inference-profile` if you use a custom profile).
 - Frontend: React, Recharts; production static host via CDK CloudFront + S3
 - Infra: **AWS CDK (Python)** in `infra/` (Terraform not used). Account `894831047463`, profile `trade-recon-8948`, region `us-east-1`. Tag `Project=trade-recon`.
-- Orchestration: EventBridge (weekdays) + standard Step Functions (one task) → `POST /api/recon/run`; daily stub memory writer via SSM Run Command
+- Orchestration: EventBridge (weekdays) + standard Step Functions (one task) → `POST /api/recon/run`; daily HITL memory backfill via SSM (Titan embed if needed; skip if caught up)
 - Market data S3 (reuse, do not destroy): `trade-recon-market-data-gagan-8948-us-east-1`
 
 ## Non-negotiable guardrails
@@ -40,14 +40,16 @@ Trade reconciliation platform: two trade records (clearing broker + internal des
 ## Commands
 
 - Backend tests: `uv run pytest`
-- Fetch market data: `uv run fetch-market-data` (or `uv run python -m backend.data.fetch_market_data`)
-- Generate synthetic trades: `uv run generate-trades` (or `uv run python -m backend.data.generator`)
-- Normalize trades: `uv run normalize-trades` (or `uv run python -m backend.pipeline.ingest`)
-- Match trades: `uv run match-trades` (or `uv run python -m backend.pipeline.matcher`)
+- Fetch market data: `uv run fetch-market-data` (`--lookback-days 5` for daily incremental merge)
+- Generate synthetic trades: `uv run generate-trades --trade-date YYYY-MM-DD` (default last US session; `--all-history` for the old random 2y sample). Same seed + date is idempotent.
+- Normalize trades: `uv run normalize-trades --trade-date YYYY-MM-DD` (replace that session only)
+- Match trades: `uv run match-trades` (full-book rematch; does not delete `audit_log`)
+- Daily blotter: `uv run daily-blotter` / `--backfill-sessions 20 --skip-fetch`. Production weekdays **21:30 UTC** run this on the API EC2 via SSM (fetch Massive → S3 `market-data/` → generate `--n-trades 40` → ingest/match RDS). Requires SSM SecureString `/trade-recon/massive-api-key` (`uv run python infra/ec2_api/put_massive_api_key.py`); do not paste keys.
+- Pause billing: `uv run stop-billing` or `infra/scripts/stop-product.sh`. Resume: `uv run start-product`. Stopped RDS still bills storage; AWS may auto-start it after 7 days.
 - Postgres: set `DATABASE_URL` to the RDS instance (see `.env.example`). Local `docker compose` is emergency-only.
 - Sync deps: `uv sync --group dev`
 - Investigate breaks: `uv run investigate-breaks` (`--limit N`, `--break-id`, `--provider stub|bedrock`)
-- Write agent memory: `uv run write-agent-memory` (`--provider stub`, `--no-semantic`)
+- Write agent memory: `uv run write-agent-memory` (default: Titan backfill of missing HITL rows, skip if caught up, no Converse; `--embed-provider stub` locally; `--semantic` opt-in)
 - Backend dev server: `uv run serve-api` or `uv run uvicorn backend.api.main:app --reload`
 - Frontend: `cd frontend && npm install && npm run dev` (http://localhost:5173; proxies `/api` to `http://127.0.0.1:8000`, or set `VITE_API_BASE`)
 - Deploy (product stacks): see `infra/README.md`

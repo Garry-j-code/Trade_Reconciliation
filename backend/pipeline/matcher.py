@@ -52,6 +52,7 @@ from backend.pipeline.rules import (
     MATCH_PASS_SPLIT_FILL,
     MATCH_PASS_TOLERANCE,
     as_date,
+    as_datetime,
     empty_splits_frame,
     exact_match_key,
     find_split_hit,
@@ -101,6 +102,7 @@ BREAK_COLUMNS: tuple[str, ...] = (
     "desk_trade_ids",
     "symbol",
     "trade_date",
+    "executed_at",
     "detail",
 )
 
@@ -156,6 +158,17 @@ def _opt_str(value: Any) -> str | None:
 
 def _trade_date(row: Mapping[str, Any]) -> date | None:
     return as_date(row.get("trade_date"))
+
+
+def _executed_at(row: Mapping[str, Any]) -> datetime | None:
+    return as_datetime(row.get("executed_at"))
+
+
+def _earliest_executed_at(rows: Sequence[Mapping[str, Any]]) -> datetime | None:
+    times = [t for t in (_executed_at(r) for r in rows) if t is not None]
+    if not times:
+        return None
+    return min(times)
 
 
 def _notional(row: Mapping[str, Any]) -> float:
@@ -235,6 +248,7 @@ def _break_row(
         "desk_trade_ids": join_trade_ids(desk_ids),
         "symbol": symbol,
         "trade_date": trade_dt,
+        "executed_at": _earliest_executed_at(all_rows),
         "detail": detail,
     }
 
@@ -690,6 +704,10 @@ def prepare_breaks_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
     out["trade_date"] = out["trade_date"].map(
         lambda d: d.isoformat() if hasattr(d, "isoformat") else d
     )
+    if "executed_at" in out.columns:
+        out["executed_at"] = out["executed_at"].map(
+            lambda d: d.isoformat() if hasattr(d, "isoformat") else d
+        )
     out["cluster_id"] = out["cluster_id"].map(
         lambda v: None
         if v is None or (isinstance(v, float) and pd.isna(v))
@@ -777,6 +795,7 @@ def break_row_to_orm(row: Mapping[str, Any]) -> Break:
         ),
         "symbol": None if row.get("symbol") is None else str(row["symbol"]),
         "trade_date": as_date(row.get("trade_date")),
+        "executed_at": as_datetime(row.get("executed_at")),
         "detail": detail,
         "cluster_id": cluster_id,
     }
@@ -794,15 +813,18 @@ def load_frames_to_db(
     *,
     replace: bool = True,
     preserve_audit: bool = True,
+    keep_break_ids: set[uuid.UUID] | None = None,
 ) -> dict[str, int]:
     """Insert match/break rows.
 
     When ``replace``, rebuild ``matches`` and ``breaks``. ``audit_log`` is never
     deleted. Existing breaks with the same identity keep their ``break_id``
     (and therefore ``resolution_suggestions``). Stale breaks are deleted;
-    ``audit_log.break_id`` is SET NULL by the FK.
+    ``audit_log.break_id`` is SET NULL by the FK. ``keep_break_ids`` survives
+    rematch so an approved break stays as a resolved history row.
     """
     _ = preserve_audit
+    preserved = set(keep_break_ids or ())
     prepared_m = prepare_matches_for_parquet(matches)
     prepared_b = prepare_breaks_for_parquet(breaks)
 
@@ -840,7 +862,7 @@ def load_frames_to_db(
         stale_ids = [
             row.break_id
             for row in existing_by_key.values()
-            if row.break_id not in keep_ids
+            if row.break_id not in keep_ids and row.break_id not in preserved
         ]
         if stale_ids:
             session.execute(delete(Break).where(Break.break_id.in_(stale_ids)))
@@ -856,6 +878,7 @@ def load_frames_to_db(
             current.desk_trade_ids = orm.desk_trade_ids
             current.symbol = orm.symbol
             current.trade_date = orm.trade_date
+            current.executed_at = orm.executed_at
             current.detail = orm.detail
             if current.status == BREAK_STATUS_OPEN:
                 current.status = orm.status
@@ -896,7 +919,9 @@ def normalized_orm_to_record(row: NormalizedTrade) -> dict[str, Any]:
         "source": row.source,
         "symbol": row.symbol,
         "trade_date": row.trade_date,
+        "executed_at": row.executed_at,
         "settlement_date": row.settlement_date,
+        "settlement_datetime": row.settlement_datetime,
         "side": row.side,
         "quantity": row.quantity,
         "price": row.price,

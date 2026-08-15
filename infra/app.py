@@ -8,7 +8,7 @@ Default deploy (cheap / working):
   PipelineStack — weekday EventBridge → Step Functions → POST /api/recon/run
 
 Optional (context flags):
-  enablePipeline=true (default) — scheduled recon + daily stub memory writer
+  enablePipeline=true (default) — scheduled recon + daily HITL memory backfill
   enableApi=false (default) — API Gateway + Lambda stub (legacy scaffolding)
   enableEc2Api=true (default) — HTTP API on EC2; inbound :80 from CloudFront prefix list only
   enableAuth=true (default) — Cognito
@@ -122,17 +122,26 @@ def main() -> None:
         frontend.add_stack_dependency(auth)
 
     if enable_pipeline:
+        instance_override = str(app.node.try_get_context("apiInstanceId") or "").strip()
         pipeline = PipelineStack(
             app,
             "TradeReconPipeline",
             env=env,
             project_tag=project_tag,
             api_base_url=cloudfront_origin,
-            instance_id=ec2_api.instance.instance_id if ec2_api else None,
+            instance_id=instance_override
+            or (ec2_api.instance.instance_id if ec2_api else None),
             scheduler_secret=ec2_api.scheduler_secret if ec2_api else None,
-            description="Weekday recon Step Functions + daily memory writer",
+            rds_identifier=rds_id,
+            sunset_days=int(os.environ.get("SUNSET_DAYS") or 30),
+            sunset_date=str(
+                app.node.try_get_context("sunsetDate")
+                or os.environ.get("SUNSET_DATE")
+                or "2026-09-13"
+            ),
+            description="Daily blotter SSM + HITL memory backfill + 30-day sunset pause",
         )
-        if ec2_api:
+        if ec2_api and not instance_override:
             pipeline.add_stack_dependency(ec2_api)
 
     if enable_api:

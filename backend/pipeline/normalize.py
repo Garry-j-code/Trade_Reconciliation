@@ -8,7 +8,9 @@ trade_id         source trade id (broker_trade_id | blotter_id)
 source           ``broker`` | ``desk``
 symbol           symbol | ticker
 trade_date       ISO date
+executed_at      timezone-aware execution timestamp (optional)
 settlement_date  settlement_date | settle_date
+settlement_datetime  optional clock time on the settlement date
 side             BUY / SELL (uppercased)
 quantity         quantity | qty
 price            price | px
@@ -22,6 +24,7 @@ raw_payload      JSON object of the original raw row (optional column)
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
@@ -34,7 +37,9 @@ CANONICAL_COLUMNS: tuple[str, ...] = (
     "source",
     "symbol",
     "trade_date",
+    "executed_at",
     "settlement_date",
+    "settlement_datetime",
     "side",
     "quantity",
     "price",
@@ -96,6 +101,29 @@ def _to_date_series(series: pd.Series) -> pd.Series:
     return parsed.dt.date
 
 
+def _empty_dt_series(index: pd.Index) -> pd.Series:
+    return pd.Series([pd.NaT] * len(index), index=index, dtype="datetime64[ns, UTC]")
+
+
+def _looks_date_only(value: Any) -> bool:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return True
+    if type(value) is date:  # noqa: E721 — datetime is a date subclass
+        return True
+    text = str(value).strip()
+    return len(text) == 10 and text[4] == "-" and text[7] == "-"
+
+
+def _to_datetime_series(frame: pd.DataFrame, column: str) -> pd.Series:
+    """Parse optional timestamp column to UTC (missing / date-only → NaT)."""
+    if column not in frame.columns:
+        return _empty_dt_series(frame.index)
+    parsed = pd.to_datetime(frame[column], utc=True, errors="coerce")
+    date_only = frame[column].map(_looks_date_only)
+    parsed = parsed.where(~date_only, pd.NaT)
+    return parsed
+
+
 def _row_payload(row: Mapping[str, Any], columns: Iterable[str]) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     for col in columns:
@@ -136,7 +164,9 @@ def normalize_broker_trades(
             "source": SOURCE_BROKER,
             "symbol": work["symbol"].astype(str).str.upper(),
             "trade_date": _to_date_series(work["trade_date"]),
+            "executed_at": _to_datetime_series(work, "executed_at"),
             "settlement_date": _to_date_series(work["settlement_date"]),
+            "settlement_datetime": _to_datetime_series(work, "settlement_datetime"),
             "side": work["side"].astype(str).str.upper().str.strip(),
             "quantity": pd.to_numeric(work["quantity"], errors="coerce"),
             "price": pd.to_numeric(work["price"], errors="coerce"),
@@ -180,7 +210,9 @@ def normalize_desk_trades(
             "source": SOURCE_DESK,
             "symbol": work["ticker"].astype(str).str.upper(),
             "trade_date": _to_date_series(work["trade_date"]),
+            "executed_at": _to_datetime_series(work, "executed_at"),
             "settlement_date": _to_date_series(work["settle_date"]),
+            "settlement_datetime": _to_datetime_series(work, "settlement_datetime"),
             "side": work["side"].astype(str).str.upper().str.strip(),
             "quantity": pd.to_numeric(work["qty"], errors="coerce"),
             "price": pd.to_numeric(work["px"], errors="coerce"),
@@ -253,7 +285,7 @@ def prepare_normalized_for_parquet(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     if "raw_payload" in out.columns:
         out["raw_payload"] = out["raw_payload"].map(raw_payload_to_json)
-    for col in ("trade_date", "settlement_date"):
+    for col in ("trade_date", "settlement_date", "executed_at", "settlement_datetime"):
         if col in out.columns:
             out[col] = out[col].map(
                 lambda d: d.isoformat() if hasattr(d, "isoformat") else d

@@ -1,6 +1,7 @@
-"""Local recon orchestration: normalize generated Parquet → match → persist to RDS.
+"""Recon orchestration: rematch the Postgres book, or normalize Parquet locally.
 
-Composes ``ingest.run_normalize`` and ``matcher.run_match``. No live market-API calls.
+``run_rematch_from_db`` is the hosted analyst path (no generated Parquet).
+``run_recon`` still normalizes laptop Parquet then matches. No LLM calls.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from backend.pipeline.ingest import run_normalize
 from backend.pipeline.matcher import (
     break_row_to_orm,
     match_row_to_orm,
+    read_normalized_from_db,
     run_match,
 )
 
@@ -125,20 +127,88 @@ def run_recon(
     )
 
 
-def run_recon_capped(
+def run_rematch_from_db(
+    *,
+    database_url: str | None = None,
+    cache_dir: Path | None = None,
+) -> ReconRunResult:
+    """Rematch the current normalized book in Postgres. No generated Parquet required.
+
+    Analyst ``POST /api/recon/run`` uses this path. Generation / daily blotter
+    stay on EventBridge and the CLI.
+    """
+    started = datetime.now(timezone.utc)
+    url = database_url if database_url is not None else database_url_from_env()
+    if not url:
+        raise ValueError("DATABASE_URL is not configured")
+    normalized = read_normalized_from_db(url)
+    if normalized is None or getattr(normalized, "empty", True):
+        raise ValueError(
+            "No normalized trades in the database. "
+            "Run the daily blotter (CLI / EventBridge) before rematching."
+        )
+    source = normalized["source"] if "source" in normalized.columns else None
+    broker_rows = int((source == "broker").sum()) if source is not None else 0
+    desk_rows = int((source == "desk").sum()) if source is not None else 0
+
+    match = run_match(
+        cache_dir=cache_dir,
+        database_url=url,
+        write_parquet=False,
+        load_db=True,
+        from_db=True,
+    )
+    elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    breaks_by_type = {
+        str(k): int(v)
+        for k, v in (match.summary.get("break_type_counts") or {}).items()
+    }
+    return ReconRunResult(
+        broker_rows=broker_rows,
+        desk_rows=desk_rows,
+        normalized_rows=int(len(normalized)),
+        match_count=match.match_rows,
+        break_count=match.break_rows,
+        breaks_by_type=breaks_by_type,
+        elapsed_seconds=elapsed,
+        db_loaded=bool(match.db_loaded),
+    )
+
+
+def _run_capped(
+    fn: Any,
     *,
     timeout_seconds: float | None = None,
     **kwargs: Any,
 ) -> ReconRunResult:
-    """Run ``run_recon`` in a worker thread; raise if the wall-clock cap is hit."""
     cap = (
         float(timeout_seconds)
         if timeout_seconds is not None
         else recon_timeout_seconds()
     )
     with ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(run_recon, **kwargs)
+        future = pool.submit(fn, **kwargs)
         try:
             return future.result(timeout=cap)
         except FuturesTimeout as exc:
             raise ReconTimeoutError(f"Recon run exceeded {cap:.0f}s cap") from exc
+
+
+def run_recon_capped(
+    *,
+    timeout_seconds: float | None = None,
+    **kwargs: Any,
+) -> ReconRunResult:
+    """Run ``run_recon`` in a worker thread; raise if the wall-clock cap is hit."""
+    return _run_capped(run_recon, timeout_seconds=timeout_seconds, **kwargs)
+
+
+def run_rematch_from_db_capped(
+    *,
+    timeout_seconds: float | None = None,
+    **kwargs: Any,
+) -> ReconRunResult:
+    """Wall-clock cap around ``run_rematch_from_db``."""
+    return _run_capped(
+        run_rematch_from_db, timeout_seconds=timeout_seconds, **kwargs
+    )

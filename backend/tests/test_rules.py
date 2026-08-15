@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pandas as pd
 import pytest
 
 from backend.pipeline.rules import (
     as_date,
+    as_datetime,
     empty_splits_frame,
     exact_match_key,
     find_split_hit,
@@ -30,6 +31,15 @@ def test_as_date_parses_iso_and_rejects_nat() -> None:
     assert as_date(date(2024, 6, 3)) == date(2024, 6, 3)
     assert as_date(None) is None
     assert as_date(float("nan")) is None
+
+
+def test_as_datetime_parses_iso_to_utc() -> None:
+    dt = as_datetime("2024-06-03T10:15:30-04:00")
+    assert dt is not None
+    assert dt.tzinfo is not None
+    assert dt.astimezone(timezone.utc).hour == 14
+    assert as_datetime(None) is None
+    assert as_datetime(float("nan")) is None
 
 
 def test_price_tolerance_band() -> None:

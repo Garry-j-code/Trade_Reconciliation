@@ -20,7 +20,7 @@ def _scheduler_secret() -> str:
 def _post_recon() -> dict[str, Any]:
     base = os.environ["API_BASE_URL"].rstrip("/")
     url = f"{base}/api/recon/run"
-    body = json.dumps({"replace": True}).encode("utf-8")
+    body = json.dumps({"mode": "rematch"}).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,
@@ -52,13 +52,12 @@ def _run_memory_writer() -> dict[str, Any]:
         "set +a\n"
         "cd /opt/trade-recon/app\n"
         "export PYTHONPATH=/opt/trade-recon/app\n"
-        "/opt/trade-recon/venv/bin/python -m backend.agent.memory_writer "
-        "--provider stub --no-semantic\n"
+        "/opt/trade-recon/venv/bin/python -m backend.agent.memory_writer\n"
     )
     resp = ssm.send_command(
         InstanceIds=[instance_id],
         DocumentName="AWS-RunShellScript",
-        Comment="trade-recon memory writer (stub provider; Bedrock cost cap)",
+        Comment="trade-recon memory writer (Titan backfill; skip if caught up)",
         Parameters={"commands": [script]},
         TimeoutSeconds=120,
     )
@@ -66,11 +65,44 @@ def _run_memory_writer() -> dict[str, Any]:
     return {"ok": True, "command_id": command_id}
 
 
+def _run_daily_blotter() -> dict[str, Any]:
+    instance_id = os.environ["INSTANCE_ID"]
+    ssm = boto3.client("ssm")
+    script = (
+        "set -euo pipefail\n"
+        "set +x\n"
+        "set -a\n"
+        "source /etc/trade-recon/api.env\n"
+        "set +a\n"
+        "cd /opt/trade-recon/app\n"
+        "export PYTHONPATH=/opt/trade-recon/app\n"
+        "if KEY=$(aws ssm get-parameter --name /trade-recon/massive-api-key "
+        "--with-decryption --query Parameter.Value --output text 2>/dev/null); then\n"
+        "  if [ -n \"$KEY\" ] && [ \"$KEY\" != \"None\" ]; then\n"
+        "    export MASSIVE_API_KEY=\"$KEY\"\n"
+        "  fi\n"
+        "fi\n"
+        "unset KEY\n"
+        "/opt/trade-recon/venv/bin/python -m backend.ops.daily_blotter "
+        "--lookback-days 5 --n-trades 40\n"
+    )
+    resp = ssm.send_command(
+        InstanceIds=[instance_id],
+        DocumentName="AWS-RunShellScript",
+        Comment="trade-recon daily blotter (fetch if key present; generate+ingest+match+investigate)",
+        Parameters={"commands": [script]},
+        TimeoutSeconds=1800,
+    )
+    return {"ok": True, "command_id": resp["Command"]["CommandId"]}
+
+
 def handler(event: dict[str, Any] | None, context: Any) -> dict[str, Any]:
     payload = event or {}
     if isinstance(payload.get("Payload"), dict):
         payload = payload["Payload"]
-    action = str(payload.get("action") or payload.get("Action") or "recon")
+    action = str(payload.get("action") or payload.get("Action") or "blotter")
     if action == "memory":
         return _run_memory_writer()
+    if action in {"blotter", "daily", "recon"}:
+        return _run_daily_blotter()
     return _post_recon()
