@@ -30,7 +30,9 @@ export function SummaryCards({ summary }: { summary: SummaryResponse }) {
       <div className="card tone-warn">
         <div className="label">Open breaks</div>
         <div className="value">{formatNumber(open)}</div>
-        <div className="sub">{(summary.breaks_by_type ?? []).length} types</div>
+        <div className="sub">
+          {(summary.break_type_options ?? summary.breaks_by_type ?? []).length} types
+        </div>
       </div>
       <div className="card tone-accent">
         <div className="label">Notional at risk</div>

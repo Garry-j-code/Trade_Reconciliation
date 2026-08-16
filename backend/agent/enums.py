@@ -24,6 +24,7 @@ class RootCause(str, Enum):
     CALENDAR_TIMING = "calendar_timing"
     DATA_QUALITY = "data_quality"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    OTHER = "other"
 
 
 class SuggestedAction(str, Enum):

@@ -224,7 +224,7 @@ class Ec2ApiStack(Stack):
             "ApiSourceAsset",
             path=str(bundle),
             ignore_mode=IgnoreMode.GLOB,
-            exclude=["**/.env", "**/.env.*"],
+            exclude=["**/.env", "**/.env.*", "**/docs/**", "docs"],
         )
         code_asset.grant_read(role)
 

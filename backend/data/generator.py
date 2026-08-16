@@ -1071,6 +1071,38 @@ def write_generated_trades(
     return paths
 
 
+HOSTED_APP_ROOT = Path("/opt/trade-recon/app")
+
+
+def should_delete_generated_after_db(*, env: Mapping[str, str] | None = None) -> bool:
+    """True on the API EC2 (or when TRADE_RECON_DELETE_GENERATED is set).
+
+    Hosted rematch reads RDS. The next blotter run rewrites these files.
+    """
+    source = env if env is not None else os.environ
+    flag = (source.get("TRADE_RECON_DELETE_GENERATED") or "").strip().lower()
+    if flag in {"1", "true", "yes"}:
+        return True
+    if flag in {"0", "false", "no"}:
+        return False
+    return HOSTED_APP_ROOT.is_dir()
+
+
+def delete_generated_trade_files(output_dir: Path) -> list[str]:
+    """Remove blotter Parquet (and generation_summary.json) under ``output_dir``."""
+    removed: list[str] = []
+    if not output_dir.is_dir():
+        return removed
+    for path in sorted(output_dir.glob("*.parquet")):
+        path.unlink()
+        removed.append(str(path))
+    summary = output_dir / "generation_summary.json"
+    if summary.is_file():
+        summary.unlink()
+        removed.append(str(summary))
+    return removed
+
+
 def run_generate(config: GeneratorConfig) -> dict[str, Any]:
     """Load cache → generate → write artifacts; return summary dict."""
     cache = load_market_cache(config.cache_dir, symbols=config.symbols)

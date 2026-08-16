@@ -9,7 +9,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from backend.agent.enums import RootCause, SuggestedAction
+from backend.agent.enums import ROOT_CAUSE_VALUES, RootCause, SuggestedAction
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
@@ -72,11 +72,18 @@ def extract_json_object(text: str) -> dict[str, Any]:
 
 
 def parse_agent_output(raw: str | dict[str, Any]) -> AgentOutput:
-    """Validate model output against the §6.3 contract and pinned enums."""
+    """Validate model output against the §6.3 contract and pinned enums.
+
+    Unknown ``root_cause`` strings map to ``other`` (still an enum). Other
+    contract failures (bad action, missing fields) still raise.
+    """
     if isinstance(raw, str):
         payload = extract_json_object(raw)
     else:
-        payload = raw
+        payload = dict(raw)
+    root = payload.get("root_cause")
+    if isinstance(root, str) and root not in ROOT_CAUSE_VALUES:
+        payload["root_cause"] = RootCause.OTHER.value
     return AgentOutput.model_validate(payload)
 
 

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ApiError, getBreaks } from "../api/client";
-import { BREAK_TYPES, STATUS_FILTER_OPTIONS, type BreakListItem, type BreakSortField, type SortOrder } from "../api/types";
+import { STATUS_FILTER_OPTIONS, type BreakListItem, type BreakSortField, type SortOrder } from "../api/types";
 import { BreaksTable } from "../components/BreaksTable";
 import { DateRangeFilter } from "../components/DateRangeFilter";
 import { labelize } from "../lib/format";
@@ -35,6 +35,8 @@ export function Breaks() {
 
   const [items, setItems] = useState<BreakListItem[]>([]);
   const [total, setTotal] = useState(0);
+  const [typeOptions, setTypeOptions] = useState<string[]>([]);
+  const [othersTypes, setOthersTypes] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [reconTick, setReconTick] = useState(0);
@@ -83,6 +85,8 @@ export function Breaks() {
         if (cancelled) return;
         setItems(res.items);
         setTotal(res.total);
+        setTypeOptions(res.break_type_options ?? []);
+        setOthersTypes(res.others_break_types ?? []);
         setError(null);
       })
       .catch((err: unknown) => {
@@ -140,11 +144,19 @@ export function Breaks() {
               onChange={(e) => patchParams({ break_type: e.target.value })}
             >
               <option value="">All</option>
-              {BREAK_TYPES.map((t) => (
+              {typeOptions.map((t) => (
                 <option key={t} value={t}>
                   {labelize(t)}
                 </option>
               ))}
+              {breakType &&
+              breakType !== "__others__" &&
+              !typeOptions.includes(breakType) ? (
+                <option value={breakType}>{labelize(breakType)}</option>
+              ) : null}
+              {othersTypes.length > 0 ? (
+                <option value="__others__">Others</option>
+              ) : null}
             </select>
           </div>
           <div className="field">

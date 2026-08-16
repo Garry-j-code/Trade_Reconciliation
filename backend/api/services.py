@@ -165,6 +165,61 @@ def build_break_detail(session: Session, row: Break) -> BreakDetailResponse:
     )
 
 
+def assemble_investigate_context(session: Session, row: Break) -> dict[str, Any]:
+    """Payload the LLM sees in addition to any analyst chat note.
+
+    Never used by the deterministic matcher. Trade lookups are best-effort so
+    unit tests without a full ORM session still attach break fields.
+    """
+    from backend.agent.prompt import break_to_payload
+
+    item = crud.break_to_list_item(row)
+    executed = item.get("executed_at")
+    context: dict[str, Any] = {
+        "break": break_to_payload(row),
+        "desk": item.get("desk"),
+        "notional_at_risk": item.get("notional_at_risk"),
+        "executed_at": executed.isoformat() if executed is not None else None,
+        "status": row.status,
+    }
+    try:
+        suggestion = crud.latest_suggestion(session, row.break_id)
+        if suggestion is not None:
+            context["existing_suggestion"] = suggestion_out(
+                row.break_id, suggestion
+            ).model_dump(mode="json")
+        else:
+            context["existing_suggestion"] = None
+    except Exception:  # noqa: BLE001 — still investigate from pipeline fields
+        context["existing_suggestion"] = None
+
+    try:
+        broker_ids, desk_ids = crud.trade_ids_for_break(row)
+        broker_norm = crud.get_normalized_by_ids(session, "broker", broker_ids)
+        desk_norm = crud.get_normalized_by_ids(session, "desk", desk_ids)
+        broker_raw = crud.get_raw_broker(session, broker_ids)
+        desk_raw = crud.get_raw_desk(session, desk_ids)
+        context["trades"] = {
+            "broker_trade_ids": broker_ids,
+            "desk_trade_ids": desk_ids,
+            "broker_normalized": [
+                NormalizedTradeOut.model_validate(t).model_dump(mode="json")
+                for t in broker_norm
+            ],
+            "desk_normalized": [
+                NormalizedTradeOut.model_validate(t).model_dump(mode="json")
+                for t in desk_norm
+            ],
+            "broker_raw": [_raw_broker_dict(t) for t in broker_raw],
+            "desk_raw": [_raw_desk_dict(t) for t in desk_raw],
+        }
+    except Exception:  # noqa: BLE001
+        context["trades"] = {
+            "note": "Trade legs were not loaded; use pipeline detail and tools."
+        }
+    return context
+
+
 def _require_break(session: Session, break_id: UUID) -> Break:
     row = crud.get_break(session, break_id)
     if row is None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -12,6 +13,8 @@ from backend.agent.schema import OUTPUT_JSON_SCHEMA
 from backend.agent.skills_loader import investigation_skills_prompt
 from backend.db.models import Break
 from backend.pipeline.rules import parse_trade_ids
+
+MAX_ANALYST_MESSAGE_CHARS = 4000
 
 
 def build_system_prompt(*, skills_dir: Path | None = None) -> str:
@@ -60,19 +63,45 @@ def break_to_payload(brk: Break) -> dict[str, Any]:
     }
 
 
-def build_user_prompt(brk: Break) -> str:
+def build_user_prompt(
+    brk: Break,
+    *,
+    extra_context: dict[str, Any] | None = None,
+    analyst_message: str | None = None,
+) -> str:
+    """Break payload is always included. Analyst text is extra context only."""
     payload = break_to_payload(brk)
-    return (
-        "Investigate this pipeline-computed break and return the JSON output contract.\n"
-        f"break_id (must be copied exactly): {payload['break_id']}\n"
-        f"break_type: {payload['break_type']}\n"
-        f"symbol: {payload['symbol']}\n"
-        f"trade_date: {payload['trade_date']}\n"
-        f"pair_id: {payload['pair_id']}\n"
-        f"broker_trade_ids: {payload['broker_trade_ids']}\n"
-        f"desk_trade_ids: {payload['desk_trade_ids']}\n"
-        f"detail (pipeline-computed; do not recalculate): {payload['detail']}\n"
-    )
+    parts = [
+        "Investigate this pipeline-computed break and return the JSON output contract.",
+        "The explanation field is shown to the analyst in chat as plain language.",
+        f"break_id (must be copied exactly): {payload['break_id']}",
+        f"break_type: {payload['break_type']}",
+        f"symbol: {payload['symbol']}",
+        f"trade_date: {payload['trade_date']}",
+        f"pair_id: {payload['pair_id']}",
+        f"broker_trade_ids: {payload['broker_trade_ids']}",
+        f"desk_trade_ids: {payload['desk_trade_ids']}",
+        f"detail (pipeline-computed; do not recalculate): {payload['detail']}",
+    ]
+    if extra_context:
+        parts.append(
+            "Additional break context already on file (trades, existing suggestion, "
+            "evidence display). Use it; do not ask the analyst to paste IDs:\n"
+            + json.dumps(extra_context, default=str, indent=2)
+        )
+    note = (analyst_message or "").strip()
+    if len(note) > MAX_ANALYST_MESSAGE_CHARS:
+        note = note[:MAX_ANALYST_MESSAGE_CHARS]
+    if note:
+        parts.append(
+            "Analyst note (additional context only — not a replacement for the "
+            f"break payload above):\n{note}"
+        )
+    else:
+        parts.append(
+            "Analyst note: (none — investigate with the attached break context only)."
+        )
+    return "\n".join(parts) + "\n"
 
 
 def fallback_output(break_id: UUID, explanation: str) -> dict[str, Any]:

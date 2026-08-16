@@ -1,15 +1,15 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ApiError,
   approveBreak,
   getBreak,
-  investigateBreak,
   overrideBreak,
   rejectBreak,
 } from "../api/client";
 import { TERMINAL_STATUSES, type BreakDetailResponse } from "../api/types";
 import { AgentPanel } from "../components/AgentPanel";
+import { InvestigateChat } from "../components/InvestigateChat";
 import { TradeDiff } from "../components/TradeDiff";
 import { formatDateTime, formatTradeTimestamp, formatUsd, labelize, shortId } from "../lib/format";
 
@@ -18,17 +18,16 @@ export function BreakDetail() {
   const [detail, setDetail] = useState<BreakDetailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState("");
-  const [busy, setBusy] = useState<"approve" | "reject" | "override" | "investigate" | null>(
-    null,
-  );
+  const [busy, setBusy] = useState<"approve" | "reject" | "override" | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
 
-  async function load() {
+  const load = useCallback(async () => {
     if (!id) return;
     const row = await getBreak(id);
     setDetail(row);
     setError(null);
-  }
+  }, [id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,22 +136,9 @@ export function BreakDetail() {
     }
   }
 
-  async function onInvestigate() {
-    setBusy("investigate");
-    setFlash(null);
+  function onInvestigate() {
     setError(null);
-    try {
-      await investigateBreak(breakId);
-      setFlash("Investigation finished. Suggestion panel updated.");
-      await load();
-    } catch (err) {
-      const msg = err instanceof ApiError ? err.detail : "Investigate failed";
-      setError(
-        `Investigate failed${err instanceof ApiError && err.status ? ` (HTTP ${err.status})` : ""}: ${msg}. Bedrock may be unavailable — the rest of the console still works.`,
-      );
-    } finally {
-      setBusy(null);
-    }
+    setChatOpen(true);
   }
 
   return (
@@ -241,7 +227,7 @@ export function BreakDetail() {
                 disabled={busy !== null}
                 onClick={onInvestigate}
               >
-                {busy === "investigate" ? "Investigating…" : "Investigate"}
+                Investigate
               </button>
             </div>
             {locked && (
@@ -270,6 +256,12 @@ export function BreakDetail() {
           ) : null}
         </div>
       </div>
+      <InvestigateChat
+        breakId={breakId}
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        onSuggestionReady={load}
+      />
     </div>
   );
 }

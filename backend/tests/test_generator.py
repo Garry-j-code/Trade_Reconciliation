@@ -89,8 +89,7 @@ def _bar(
     }
 
 
-@pytest.fixture
-def tiny_cache(tmp_path: Path) -> Path:
+def build_tiny_cache(tmp_path: Path) -> Path:
     """Minimal on-disk cache matching fetch_market_data layout."""
     cache = tmp_path / "cache"
     bars_dir = cache / "bars"
@@ -144,6 +143,11 @@ def tiny_cache(tmp_path: Path) -> Path:
     )
     write_parquet(calendar, cache / "calendar.parquet")
     return cache
+
+
+@pytest.fixture
+def tiny_cache(tmp_path: Path) -> Path:
+    return build_tiny_cache(tmp_path)
 
 
 @pytest.fixture

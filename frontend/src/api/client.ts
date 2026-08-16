@@ -4,12 +4,14 @@ import type {
   BreakDetailResponse,
   BreaksQuery,
   HealthResponse,
+  BreakInvestigateAccepted,
+  BreakInvestigateJob,
+  InvestigateStatusResponse,
   OverrideRequest,
   PaginatedBreaks,
   PaginatedMatches,
   ReconRunRequest,
   ReconRunResponse,
-  SuggestionOut,
   SummaryResponse,
 } from "./types";
 import { bearerToken, clearTokens } from "../auth/session";
@@ -181,6 +183,14 @@ export function runRecon(body: ReconRunRequest = { mode: "rematch" }): Promise<R
   });
 }
 
+export function getInvestigateStatus(
+  jobId?: string | null,
+): Promise<InvestigateStatusResponse> {
+  return request<InvestigateStatusResponse>(
+    `/api/recon/investigate-status${queryString({ job_id: jobId ?? undefined })}`,
+  );
+}
+
 export function approveBreak(
   id: string,
   body: ApprovalRequest = {},
@@ -211,9 +221,21 @@ export function overrideBreak(
   });
 }
 
-export function investigateBreak(id: string): Promise<SuggestionOut | BreakDetailResponse> {
-  return request<SuggestionOut | BreakDetailResponse>(`/api/breaks/${id}/investigate`, {
+export function startBreakInvestigate(
+  id: string,
+  message = "",
+): Promise<BreakInvestigateAccepted> {
+  return request<BreakInvestigateAccepted>(`/api/breaks/${id}/investigate`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify({ message }),
   });
+}
+
+export function getBreakInvestigateJob(
+  breakId: string,
+  jobId: string,
+): Promise<BreakInvestigateJob> {
+  return request<BreakInvestigateJob>(
+    `/api/breaks/${breakId}/investigate-jobs/${jobId}`,
+  );
 }

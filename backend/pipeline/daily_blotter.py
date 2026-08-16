@@ -33,11 +33,13 @@ from backend.data.generator import (
     GeneratorConfig,
     closed_market_dates,
     default_output_dir,
+    delete_generated_trade_files,
     last_completed_us_session,
     load_market_cache,
     parse_iso_date,
     prior_us_sessions,
     run_generate,
+    should_delete_generated_after_db,
 )
 from backend.db.session import database_url_from_env
 from backend.pipeline.ingest import run_normalize
@@ -242,6 +244,10 @@ def run_daily_blotter(
         result.match_count = match.match_rows
         result.break_count = match.break_rows
         result.db_loaded = result.db_loaded or bool(match.db_loaded)
+    if result.db_loaded and should_delete_generated_after_db():
+        dropped = delete_generated_trade_files(default_output_dir())
+        notes.append(f"deleted_generated={len(dropped)}")
+        logger.info("Removed %d generated blotter file(s) after RDS ingest", len(dropped))
     return result
 
 

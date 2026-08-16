@@ -6,14 +6,21 @@ from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from sqlalchemy import DateTime, Float, Select, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import DateTime, Float, Select, false, func, literal, select
+from sqlalchemy.orm import Session, selectinload
 
 from backend.api.models import (
     BREAK_STATUS_OPEN,
     BREAK_STATUS_OVERRIDDEN,
     BREAK_STATUS_REJECTED,
     BREAK_STATUS_RESOLVED,
+)
+from backend.api.chart_types import (
+    OTHERS_CHART_KEY,
+    UNCLASSIFIED_DISPLAY_TYPE,
+    displayed_break_category,
+    parse_break_type_filter,
+    rollup_chart_types,
 )
 from backend.db.models import (
     AuditLog,
@@ -69,6 +76,7 @@ def break_to_list_item(row: Break) -> dict[str, Any]:
     return {
         "break_id": row.break_id,
         "break_type": row.break_type,
+        "display_type": displayed_break_category(row),
         "status": row.status,
         "symbol": row.symbol,
         "trade_date": row.trade_date,
@@ -176,6 +184,8 @@ def pair_based_summary(
         "pct_clean_matched": round(pct, 4),
         "breaks_by_type": breaks_by_type,
         "notional_at_risk": round(notional_at_risk, 4),
+        "break_type_options": [],
+        "others_break_types": [],
     }
 
 
@@ -265,22 +275,20 @@ def summary_stats(
         or 0
     )
 
-    type_rows = session.execute(
-        select(Break.break_type, func.count())
-        .where(Break.status == "open", *break_range)
-        .group_by(Break.break_type)
-        .order_by(Break.break_type)
-    ).all()
-    breaks_by_type = [{"break_type": str(bt), "count": int(n)} for bt, n in type_rows]
-
-    notional = 0.0
     open_breaks = session.scalars(
-        select(Break).where(Break.status == "open", *break_range)
+        select(Break)
+        .where(Break.status == "open", *break_range)
+        .options(selectinload(Break.suggestions))
     ).all()
+    notional = 0.0
+    type_counts: dict[str, int] = {}
     for row in open_breaks:
         notional += _break_notional(row)
-
-    return pair_based_summary(
+        cat = displayed_break_category(row)
+        if cat:
+            type_counts[cat] = type_counts.get(cat, 0) + 1
+    rolled = rollup_chart_types(type_counts)
+    stats = pair_based_summary(
         pair_count=pair_count,
         broker_leg_count=broker_leg_count,
         desk_leg_count=desk_leg_count,
@@ -288,14 +296,116 @@ def summary_stats(
         match_row_count=match_row_count,
         break_count=break_count,
         open_break_count=open_break_count,
-        breaks_by_type=breaks_by_type,
+        breaks_by_type=rolled.chart,
         notional_at_risk=notional,
     )
+    stats["break_type_options"] = rolled.options
+    stats["others_break_types"] = rolled.others_members
+    return stats
+
+
+def _display_type_expr() -> Any:
+    """SQL: latest suggestion root_cause, else unclassified (not matcher type)."""
+    latest_root = (
+        select(ResolutionSuggestion.root_cause)
+        .where(ResolutionSuggestion.break_id == Break.break_id)
+        .order_by(
+            ResolutionSuggestion.created_at.desc(),
+            ResolutionSuggestion.suggestion_id.desc(),
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+    return func.coalesce(latest_root, literal(UNCLASSIFIED_DISPLAY_TYPE))
+
+
+def display_type_counts(
+    session: Session,
+    *,
+    desk: str | None = None,
+    symbol: str | None = None,
+    trade_date: date | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    status: str | None = None,
+) -> dict[str, int]:
+    """Observed display categories for the current filters (not the type filter)."""
+    cat = _display_type_expr()
+    stmt = select(cat, func.count()).select_from(Break)
+    stmt = _apply_break_filters(
+        stmt,
+        desk=desk,
+        symbol=symbol,
+        break_type=None,
+        trade_date=trade_date,
+        date_from=date_from,
+        date_to=date_to,
+        status=status,
+    )
+    stmt = stmt.group_by(cat)
+    return {
+        str(key): int(n)
+        for key, n in session.execute(stmt).all()
+        if key is not None and str(key)
+    }
+
+
+def display_type_catalog(
+    session: Session,
+    *,
+    desk: str | None = None,
+    symbol: str | None = None,
+    trade_date: date | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    status: str | None = None,
+) -> tuple[list[str], list[str]]:
+    rolled = rollup_chart_types(
+        display_type_counts(
+            session,
+            desk=desk,
+            symbol=symbol,
+            trade_date=trade_date,
+            date_from=date_from,
+            date_to=date_to,
+            status=status,
+        )
+    )
+    return rolled.options, rolled.others_members
+
+
+def _resolved_display_types(
+    session: Session,
+    break_type: str | None,
+    *,
+    desk: str | None,
+    symbol: str | None,
+    trade_date: date | None,
+    date_from: date | None,
+    date_to: date | None,
+    status: str | None,
+) -> list[str] | None:
+    tokens = parse_break_type_filter(break_type)
+    if not tokens:
+        return None
+    if tokens == [OTHERS_CHART_KEY]:
+        return rollup_chart_types(
+            display_type_counts(
+                session,
+                desk=desk,
+                symbol=symbol,
+                trade_date=trade_date,
+                date_from=date_from,
+                date_to=date_to,
+                status=status,
+            )
+        ).others_members
+    return tokens
 
 
 def _break_sort_expression(sort: str):
     if sort == "break_type":
-        return Break.break_type
+        return _display_type_expr()
     if sort == "status":
         return Break.status
     if sort == "desk":
@@ -328,8 +438,14 @@ def _apply_break_filters(
     )
     if symbol:
         stmt = stmt.where(Break.symbol == symbol.upper())
-    if break_type:
-        stmt = stmt.where(Break.break_type == break_type)
+    display_types = parse_break_type_filter(break_type)
+    if display_types:
+        if display_types == [OTHERS_CHART_KEY]:
+            stmt = stmt.where(false())
+        elif len(display_types) == 1:
+            stmt = stmt.where(_display_type_expr() == display_types[0])
+        else:
+            stmt = stmt.where(_display_type_expr().in_(display_types))
     for clause in trade_date_clauses(Break.trade_date, start, end):
         stmt = stmt.where(clause)
     status_filter = parse_break_status_filter(status)
@@ -356,11 +472,28 @@ def list_breaks(
     page_size: int = 50,
 ) -> tuple[list[Break], int]:
     """Filterable, paginated breaks. Desk filter uses ``detail.desk`` JSON."""
+    resolved = _resolved_display_types(
+        session,
+        break_type,
+        desk=desk,
+        symbol=symbol,
+        trade_date=trade_date,
+        date_from=date_from,
+        date_to=date_to,
+        status=status,
+    )
+    type_filter: str | None
+    if resolved is None:
+        type_filter = None
+    elif not resolved:
+        type_filter = OTHERS_CHART_KEY
+    else:
+        type_filter = ",".join(resolved)
     stmt = _apply_break_filters(
         select(Break),
         desk=desk,
         symbol=symbol,
-        break_type=break_type,
+        break_type=type_filter,
         trade_date=trade_date,
         date_from=date_from,
         date_to=date_to,
@@ -377,7 +510,10 @@ def list_breaks(
         ordered = ordered.nulls_last()
     items = list(
         session.scalars(
-            stmt.order_by(ordered, Break.break_id).offset(offset).limit(page_size)
+            stmt.options(selectinload(Break.suggestions))
+            .order_by(ordered, Break.break_id)
+            .offset(offset)
+            .limit(page_size)
         ).all()
     )
     return items, total

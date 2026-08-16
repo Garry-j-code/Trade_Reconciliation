@@ -19,6 +19,7 @@ class HealthResponse(BaseModel):
 class BreaksByType(BaseModel):
     break_type: str
     count: int
+    members: list[str] = Field(default_factory=list)
 
 
 class SummaryResponse(BaseModel):
@@ -36,11 +37,14 @@ class SummaryResponse(BaseModel):
     pct_clean_matched: float
     breaks_by_type: list[BreaksByType]
     notional_at_risk: float
+    break_type_options: list[str] = Field(default_factory=list)
+    others_break_types: list[str] = Field(default_factory=list)
 
 
 class BreakListItem(BaseModel):
     break_id: UUID
     break_type: str
+    display_type: str | None = None
     status: str
     symbol: str | None = None
     trade_date: date | None = None
@@ -60,6 +64,8 @@ class PaginatedBreaks(BaseModel):
     total: int
     page: int
     page_size: int
+    break_type_options: list[str] = Field(default_factory=list)
+    others_break_types: list[str] = Field(default_factory=list)
 
 
 class NormalizedTradeOut(BaseModel):
@@ -173,9 +179,20 @@ class ReconRunResponse(BaseModel):
     elapsed_seconds: float
     db_loaded: bool
     investigate_status: str | None = None
+    investigate_job_id: str | None = None
     investigate_attempted: int | None = None
     investigate_written: int | None = None
     investigate_failed: int | None = None
+
+
+class InvestigateStatusResponse(BaseModel):
+    """In-memory status of the post-rematch Bedrock investigation job."""
+
+    job_id: str | None = None
+    status: str
+    attempted: int | None = None
+    written: int | None = None
+    failed: int | None = None
 
 
 class ApprovalRequest(BaseModel):
@@ -200,10 +217,24 @@ class ApprovalResponse(BaseModel):
 
 
 class InvestigateRequest(BaseModel):
+    message: str = Field(
+        default="",
+        max_length=4000,
+        description="Analyst note; empty means investigate with break context only",
+    )
     provider: str | None = Field(
         default=None, description="stub | bedrock (default: AGENT_LLM_PROVIDER)"
     )
     tools_enabled: bool = True
+
+
+class BreakInvestigateAccepted(BaseModel):
+    """POST /investigate returns immediately so CloudFront does not 504."""
+
+    job_id: str
+    break_id: UUID
+    status: str
+    message: str = ""
 
 
 class DecisionRequest(BaseModel):
@@ -242,3 +273,13 @@ class AgentSuggestionOut(BaseModel):
     tool_calls: int = 0
     review_route: str = "manual_review"
     suggestion_id: UUID | None = None
+
+
+class BreakInvestigateJobOut(BaseModel):
+    job_id: str
+    break_id: UUID
+    status: str
+    message: str = ""
+    reply: str | None = None
+    error: str | None = None
+    suggestion: AgentSuggestionOut | None = None

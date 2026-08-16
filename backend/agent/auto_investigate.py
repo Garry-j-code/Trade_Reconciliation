@@ -10,7 +10,7 @@ import logging
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from backend.agent.cache import cache_dir_from_env, s3_cache_settings
@@ -35,6 +35,17 @@ def open_breaks_without_suggestions(
     if limit is not None:
         stmt = stmt.limit(limit)
     return list(session.scalars(stmt).all())
+
+
+def count_open_breaks_without_suggestions(session: Session) -> int:
+    """How many open breaks still lack a suggestion (cheap; no LLM)."""
+    has_suggestion = exists().where(ResolutionSuggestion.break_id == Break.break_id)
+    stmt = (
+        select(func.count())
+        .select_from(Break)
+        .where(Break.status == "open", ~has_suggestion)
+    )
+    return int(session.scalar(stmt) or 0)
 
 
 def _tool_context(session: Session) -> ToolContext:

@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from time import monotonic
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
@@ -18,6 +20,7 @@ from backend.api.auth import AuthContext
 from backend.api.deps import get_db
 from backend.api.models import DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE
 from backend.api.schemas import (
+    InvestigateStatusResponse,
     MatchListItem,
     PaginatedMatches,
     ReconRunRequest,
@@ -39,10 +42,113 @@ logger = logging.getLogger(__name__)
 # that window; Bedrock investigation must not share the request.
 API_REMATCH_TIMEOUT_SECONDS = 45.0
 _investigate_lock = threading.Lock()
+_job_lock = threading.Lock()
+_investigate_job: InvestigateJob | None = None
+
+
+@dataclass
+class InvestigateJob:
+    job_id: str
+    status: str
+    attempted: int | None = None
+    written: int | None = None
+    failed: int | None = None
+
+
+@dataclass(frozen=True)
+class InvestigateScheduleResult:
+    status: str
+    job_id: str
+    attempted: int | None = None
+    written: int | None = None
+    failed: int | None = None
+
+
+def reset_investigate_job_state() -> None:
+    """Tests only — drop in-memory job state between cases."""
+    global _investigate_job
+    with _job_lock:
+        _investigate_job = None
+
+
+def _snapshot_job() -> InvestigateJob | None:
+    with _job_lock:
+        if _investigate_job is None:
+            return None
+        return InvestigateJob(
+            job_id=_investigate_job.job_id,
+            status=_investigate_job.status,
+            attempted=_investigate_job.attempted,
+            written=_investigate_job.written,
+            failed=_investigate_job.failed,
+        )
+
+
+def _set_job(job: InvestigateJob) -> None:
+    global _investigate_job
+    with _job_lock:
+        _investigate_job = job
+
+
+def _update_job(
+    job_id: str,
+    *,
+    status: str | None = None,
+    attempted: int | None = None,
+    written: int | None = None,
+    failed: int | None = None,
+) -> None:
+    with _job_lock:
+        if _investigate_job is None or _investigate_job.job_id != job_id:
+            return
+        if status is not None:
+            _investigate_job.status = status
+        if attempted is not None:
+            _investigate_job.attempted = attempted
+        if written is not None:
+            _investigate_job.written = written
+        if failed is not None:
+            _investigate_job.failed = failed
+
+
+def _in_flight_schedule() -> InvestigateScheduleResult | None:
+    job = _snapshot_job()
+    if job is None or job.status not in {"queued", "running"}:
+        return None
+    return InvestigateScheduleResult(status=job.status, job_id=job.job_id)
 
 
 def _empty_investigate() -> dict[str, Any]:
     return {"attempted": 0, "written": 0, "failed": 0, "errors": []}
+
+
+def pending_investigate_count() -> int:
+    """Open breaks with no suggestion. Never calls an LLM. 0 in unit tests."""
+    from backend.agent.auto_investigate import count_open_breaks_without_suggestions
+    from backend.db.session import (
+        database_url_from_env,
+        get_engine,
+        get_session_factory,
+        session_scope,
+    )
+
+    if os.environ.get("TESTING") == "1":
+        return 0
+    url = database_url_from_env()
+    if not url:
+        return 0
+    engine = None
+    try:
+        engine = get_engine(url)
+        factory = get_session_factory(engine)
+        with session_scope(factory) as session:
+            return count_open_breaks_without_suggestions(session)
+    except Exception:  # noqa: BLE001 — treat as nothing to queue
+        logger.exception("Could not count breaks needing investigation")
+        return 0
+    finally:
+        if engine is not None:
+            engine.dispose()
 
 
 def investigate_after_rematch() -> dict[str, Any]:
@@ -92,33 +198,74 @@ def investigate_after_rematch() -> dict[str, Any]:
             engine.dispose()
 
 
-def schedule_investigate_after_rematch() -> str:
+def schedule_investigate_after_rematch() -> InvestigateScheduleResult:
     """Run investigation off the HTTP request so CloudFront does not 504.
 
-    Returns ``queued``. Overlapping rematch clicks share one in-flight job.
+    Returns ``queued`` when a background job starts, or ``finished`` when
+    there is nothing to investigate. Overlapping rematch clicks share one
+    in-flight job.
     """
+    existing = _in_flight_schedule()
+    if existing is not None:
+        return existing
+
+    pending = pending_investigate_count()
+    if pending == 0:
+        job = InvestigateJob(
+            job_id=str(uuid4()),
+            status="finished",
+            attempted=0,
+            written=0,
+            failed=0,
+        )
+        existing = _in_flight_schedule()
+        if existing is not None:
+            return existing
+        _set_job(job)
+        return InvestigateScheduleResult(
+            status="finished",
+            job_id=job.job_id,
+            attempted=0,
+            written=0,
+            failed=0,
+        )
+
+    job = InvestigateJob(job_id=str(uuid4()), status="queued")
+    existing = _in_flight_schedule()
+    if existing is not None:
+        return existing
+    _set_job(job)
 
     def _run() -> None:
-        if not _investigate_lock.acquire(blocking=False):
-            logger.info("Auto-investigate already running; skipping duplicate")
-            return
-        try:
-            stats = investigate_after_rematch()
-            logger.info(
-                "Auto-investigate after rematch finished attempted=%s written=%s failed=%s",
-                stats.get("attempted"),
-                stats.get("written"),
-                stats.get("failed"),
-            )
-        finally:
-            _investigate_lock.release()
+        with _investigate_lock:
+            try:
+                _update_job(job.job_id, status="running")
+                stats = investigate_after_rematch()
+                _update_job(
+                    job.job_id,
+                    status="finished",
+                    attempted=int(stats.get("attempted") or 0),
+                    written=int(stats.get("written") or 0),
+                    failed=int(stats.get("failed") or 0),
+                )
+                logger.info(
+                    "Auto-investigate after rematch finished attempted=%s written=%s failed=%s",
+                    stats.get("attempted"),
+                    stats.get("written"),
+                    stats.get("failed"),
+                )
+            except Exception:  # noqa: BLE001 — UI must leave the running state
+                logger.exception("Auto-investigate after rematch crashed")
+                _update_job(
+                    job.job_id, status="finished", attempted=0, written=0, failed=0
+                )
 
     threading.Thread(
         target=_run,
         name="investigate-after-rematch",
         daemon=True,
     ).start()
-    return "queued"
+    return InvestigateScheduleResult(status="queued", job_id=job.job_id)
 
 
 @router.get("/me")
@@ -194,6 +341,7 @@ def _recon_response(
     *,
     investigate: dict[str, Any] | None = None,
     investigate_status: str | None = None,
+    investigate_job_id: str | None = None,
 ) -> ReconRunResponse:
     stats = investigate or {}
     attempted = stats.get("attempted")
@@ -209,6 +357,7 @@ def _recon_response(
         elapsed_seconds=result.elapsed_seconds,
         db_loaded=result.db_loaded,
         investigate_status=investigate_status,
+        investigate_job_id=investigate_job_id,
         investigate_attempted=int(attempted) if attempted is not None else None,
         investigate_written=int(written) if written is not None else None,
         investigate_failed=int(failed) if failed is not None else None,
@@ -267,8 +416,20 @@ def post_recon_run(body: ReconRunRequest | None = None) -> ReconRunResponse:
         result = run_rematch_from_db_capped(
             timeout_seconds=API_REMATCH_TIMEOUT_SECONDS
         )
-        status = schedule_investigate_after_rematch()
-        return _recon_response(result, investigate_status=status)
+        scheduled = schedule_investigate_after_rematch()
+        stats: dict[str, Any] | None = None
+        if scheduled.status == "finished":
+            stats = {
+                "attempted": scheduled.attempted if scheduled.attempted is not None else 0,
+                "written": scheduled.written if scheduled.written is not None else 0,
+                "failed": scheduled.failed if scheduled.failed is not None else 0,
+            }
+        return _recon_response(
+            result,
+            investigate=stats,
+            investigate_status=scheduled.status,
+            investigate_job_id=scheduled.job_id,
+        )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except NormalizationError as exc:
@@ -279,6 +440,23 @@ def post_recon_run(body: ReconRunRequest | None = None) -> ReconRunResponse:
         raise HTTPException(status_code=status, detail=message) from exc
     except ReconTimeoutError as exc:
         raise HTTPException(status_code=504, detail=str(exc)) from exc
+
+
+@router.get("/recon/investigate-status", response_model=InvestigateStatusResponse)
+def get_investigate_status(
+    job_id: str | None = Query(default=None),
+) -> InvestigateStatusResponse:
+    """Poll the in-memory post-rematch investigation job (no LLM call)."""
+    job = _snapshot_job()
+    if job is None:
+        return InvestigateStatusResponse(job_id=job_id, status="idle")
+    return InvestigateStatusResponse(
+        job_id=job.job_id,
+        status=job.status,
+        attempted=job.attempted,
+        written=job.written,
+        failed=job.failed,
+    )
 
 
 @router.post("/ops/memory-write")

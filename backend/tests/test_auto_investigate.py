@@ -14,6 +14,7 @@ if not hasattr(SQLiteTypeCompiler, "visit_JSONB"):
     SQLiteTypeCompiler.visit_JSONB = SQLiteTypeCompiler.visit_JSON  # type: ignore[attr-defined]
 
 from backend.agent.auto_investigate import (
+    count_open_breaks_without_suggestions,
     investigate_missing_suggestions,
     open_breaks_without_suggestions,
 )
@@ -98,6 +99,7 @@ def test_investigate_missing_writes_suggestion_and_skips_existing(
     open_ids = {row.break_id for row in open_breaks_without_suggestions(session)}
     assert missing.break_id in open_ids
     assert already.break_id not in open_ids
+    assert count_open_breaks_without_suggestions(session) == 1
 
     summary = investigate_missing_suggestions(session, provider_name="stub")
     assert summary["attempted"] == 1

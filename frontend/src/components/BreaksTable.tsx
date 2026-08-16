@@ -61,7 +61,7 @@ export function BreaksTable({
               <td className="mono">
                 <Link to={`/breaks/${row.break_id}`}>{shortId(row.break_id)}</Link>
               </td>
-              <td>{labelize(row.break_type)}</td>
+              <td>{labelize(row.display_type || row.break_type)}</td>
               <td>
                 <span className={`pill ${row.status}`}>{row.status}</span>
                 {row.last_actor ? (

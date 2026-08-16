@@ -96,7 +96,7 @@ export function Dashboard() {
   }
 
   const chartData = (summary.breaks_by_type ?? []).map((row) => ({
-    name: labelize(row.break_type),
+    name: row.break_type === "__others__" ? "Others" : labelize(row.break_type),
     break_type: row.break_type,
     count: row.count,
   }));

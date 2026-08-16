@@ -88,7 +88,7 @@ The pipeline and agent must read this cache only — they never call live market
 
 ## Generate synthetic trades
 
-Builds clearing-broker and internal-desk legs from the **cached** Parquet (no live API). Injects non-corporate-action breaks at controlled rates; corporate-action quantity mismatches use **real split factors** from `splits.parquet` (broker adjusted, desk lag). Writes Parquet under `backend/data/generated/` plus a ground-truth manifest.
+Builds clearing-broker and internal-desk legs from the **cached** Parquet (no live API). Injects non-corporate-action breaks at controlled rates; corporate-action quantity mismatches use **real split factors** from `splits.parquet` (broker adjusted, desk lag). Writes Parquet under `backend/data/generated/` plus a ground-truth manifest. On the API EC2 (`/opt/trade-recon/app`, or `TRADE_RECON_DELETE_GENERATED=1`), weekday blotter **deletes** those files after RDS load; the next run recreates them. Laptop blotter without that flag keeps `generated/`.
 
 ```bash
 # After fetch-market-data has populated the cache
@@ -167,17 +167,17 @@ uv run uvicorn backend.api.main:app --reload
 |---|---|---|
 | GET | `/health` | Process up; `db` is `connected` or `unavailable` |
 | GET | `/api/summary` | Trade counts, % clean-matched, open breaks by type, notional at risk |
-| GET | `/api/breaks` | Filterable list (`desk`, `symbol`, `break_type`, `date`) + pagination |
-| GET | `/api/breaks/{id}` | Side-by-side broker vs desk + suggestion placeholder |
+| GET | `/api/breaks` | Filterable list (`desk`, `symbol`, `break_type`, date range) + pagination. Chart/filter `break_type` is agent `root_cause` (Unclassified until investigated; Others is a rare-type rollup). Matcher `break_type` stays a fact on the row. |
+| GET | `/api/breaks/{id}` | Side-by-side broker vs desk + latest suggestion |
 | GET | `/api/matches` | Optional match list |
-| POST | `/api/recon/run` | Normalize + match local generated Parquet into RDS (no live Massive) |
+| POST | `/api/recon/run` | Default **rematch RDS** (`normalized_trades`); does **not** read `backend/data/generated/*.parquet`. Then queues Bedrock investigate in the background. `mode=ingest` still loads Parquet (laptop). Cap via `RECON_TIMEOUT_SECONDS` (default 120). |
+| GET | `/api/recon/investigate-status` | Poll the post-rematch investigate job (`job_id` optional). No LLM call. |
 | POST | `/api/breaks/{id}/approve` | Human approve (always writes `audit_log`; never auto-approves) |
 | POST | `/api/breaks/{id}/reject` | Reject with note |
 | POST | `/api/breaks/{id}/override` | Override/resolve with note |
-| POST | `/api/breaks/{id}/investigate` | Agent investigate (writes `resolution_suggestions` only; cap 5 tools). Body: `{"provider":"stub"|"bedrock"}`. 503 if Bedrock is denied. |
+| POST | `/api/breaks/{id}/investigate` | Queue agent investigate (writes `resolution_suggestions` only; cap 5 tools). Body: `{"message":"…","provider":"stub"|"bedrock"}`. Returns a job id immediately. 503 if Bedrock is denied. |
+| GET | `/api/breaks/{id}/investigate-jobs/{job_id}` | Poll that per-break investigate job (no LLM call). |
 | GET | `/api/breaks/{id}/suggestion` | Latest agent suggestion, or 404 if none |
-
-`POST /api/recon/run` reads `backend/data/generated/*.parquet` and the local splits cache only. Cap via `RECON_TIMEOUT_SECONDS` (default 120).
 
 ## Agent (Bedrock, local Python)
 
@@ -228,7 +228,7 @@ npm install
 npm run dev
 ```
 
-Pages: Dashboard (summary cards + break-type chart), Breaks (filters), Break detail (broker vs desk + agent panel, approve/reject, optional Investigate).
+Pages: Dashboard (summary cards + break-type chart), Breaks (filters), Break detail (broker vs desk + agent panel, approve/reject/override). **Investigate** is a bottom-right chat: it queues Bedrock and polls the job; it is not a stub button. Chart and type filter use agent `root_cause` (Unclassified until investigated; rare types roll up as Others). Matcher types remain facts, not the chart series.
 
 ## Architecture (AWS vs local)
 
@@ -268,9 +268,9 @@ CloudFront is the only public HTTPS entry. EC2:80 accepts the CloudFront origin-
 ## How a client operates
 
 1. Open `https://d1a8rtzx54qkw.cloudfront.net` and sign in (email/password). Demo analyst is seeded by CDK; get the password from SSM `/trade-recon/demo-analyst-password` (SecureString) and **change it**.
-2. Dashboard shows match rate, breaks by type, and notional at risk.
-3. **Run reconciliation** runs `mode=daily` (one session; other dates stay). Weekdays **21:30 UTC** EventBridge runs SSM `daily-blotter`.
-4. Open a break, **Investigate** (agent writes `resolution_suggestions` only; may call `search_similar_breaks`), then **Approve** or **Reject** with a note. Every decision writes `audit_log` and upserts `agent_memory` (Titan embed; row kept if embed fails).
+2. Dashboard shows match rate, breaks by **display type** (agent `root_cause`; Unclassified until investigated; Others for rare types), and notional at risk.
+3. **Run reconciliation** rematches the book already in **RDS** (not `generated/*.parquet`), then queues Bedrock investigate in the background — poll `/api/recon/investigate-status`. Weekdays **21:30 UTC** EventBridge runs SSM `daily-blotter` (generate/ingest/match on EC2; hosted blotter then deletes `generated/*.parquet`).
+4. Open a break, use the bottom-right **Investigate** chat (optional `message`; agent writes `resolution_suggestions` only; may call `search_similar_breaks`), then **Approve**, **Reject**, or **Override** with a note. Every decision writes `audit_log` and upserts `agent_memory` (Titan embed; row kept if embed fails).
 5. Daily **07:00 UTC** a memory backfill runs on the instance (SSM). It embeds any HITL decisions that missed approve-time write, then **skips** when caught up. It does **not** run a nightly Converse job.
 
 Local development: `AUTH_DISABLED=true` in `.env`, `uv run serve-api`, `cd frontend && npm run dev`. Hosted UI always requires Cognito.

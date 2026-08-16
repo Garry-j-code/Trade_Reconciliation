@@ -10,6 +10,7 @@ export interface HealthResponse {
 export interface BreaksByType {
   break_type: string;
   count: number;
+  members?: string[];
 }
 
 export interface SummaryResponse {
@@ -25,11 +26,14 @@ export interface SummaryResponse {
   pct_clean_matched: number;
   breaks_by_type: BreaksByType[];
   notional_at_risk: number;
+  break_type_options?: string[];
+  others_break_types?: string[];
 }
 
 export interface BreakListItem {
   break_id: string;
   break_type: string;
+  display_type?: string | null;
   status: string;
   symbol: string | null;
   trade_date: string | null;
@@ -49,6 +53,8 @@ export interface PaginatedBreaks {
   total: number;
   page: number;
   page_size: number;
+  break_type_options?: string[];
+  others_break_types?: string[];
 }
 
 export interface NormalizedTradeOut {
@@ -159,9 +165,35 @@ export interface ReconRunResponse {
   elapsed_seconds: number;
   db_loaded: boolean;
   investigate_status?: string | null;
+  investigate_job_id?: string | null;
   investigate_attempted?: number | null;
   investigate_written?: number | null;
   investigate_failed?: number | null;
+}
+
+export interface InvestigateStatusResponse {
+  job_id: string | null;
+  status: string;
+  attempted?: number | null;
+  written?: number | null;
+  failed?: number | null;
+}
+
+export interface BreakInvestigateAccepted {
+  job_id: string;
+  break_id: string;
+  status: string;
+  message?: string;
+}
+
+export interface BreakInvestigateJob {
+  job_id: string;
+  break_id: string;
+  status: string;
+  message?: string;
+  reply?: string | null;
+  error?: string | null;
+  suggestion?: SuggestionOut | null;
 }
 
 export interface ApprovalRequest {
@@ -207,15 +239,6 @@ export interface BreaksQuery {
   page?: number;
   page_size?: number;
 }
-
-export const BREAK_TYPES = [
-  "missing_broker",
-  "missing_desk",
-  "price_break",
-  "quantity_break",
-  "duplicate",
-  "settlement_date_mismatch",
-] as const;
 
 export const BREAK_STATUSES = [
   "open",

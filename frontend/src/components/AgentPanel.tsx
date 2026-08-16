@@ -49,7 +49,7 @@ export function AgentPanel({ detail }: { detail: BreakDetailResponse }) {
 
       {!hasSuggestion ? (
         <p className="placeholder">
-          No investigation yet. Use Investigate to request a suggestion. Approve
+          No investigation yet. Open Investigate to chat with the agent. Approve
           applies the suggested book fix; Reject disagrees without closing;
           Override force-closes without changing the books.
         </p>

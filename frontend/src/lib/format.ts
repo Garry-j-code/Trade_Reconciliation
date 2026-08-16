@@ -79,6 +79,9 @@ export function shortId(id: string | null | undefined): string {
 
 export function labelize(value: string | null | undefined): string {
   if (!value) return "—";
+  if (value === "unclassified") return "Unclassified";
+  if (value === "other") return "Other";
+  if (value === "__others__") return "Others";
   return value.replace(/_/g, " ");
 }
 
