@@ -129,8 +129,10 @@ def main() -> None:
             env=env,
             project_tag=project_tag,
             api_base_url=cloudfront_origin,
-            instance_id=instance_override
-            or (ec2_api.instance.instance_id if ec2_api else None),
+            # No default instance id: the trigger Lambda targets the API box by
+            # Name tag, which survives the instance replacement that any
+            # Ec2ApiStack deploy causes. apiInstanceId still forces a specific one.
+            instance_id=instance_override or None,
             scheduler_secret=ec2_api.scheduler_secret if ec2_api else None,
             rds_identifier=rds_id,
             sunset_days=int(os.environ.get("SUNSET_DAYS") or 30),

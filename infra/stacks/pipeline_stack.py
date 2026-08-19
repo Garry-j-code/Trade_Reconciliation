@@ -47,9 +47,14 @@ class PipelineStack(Stack):
 
         Tags.of(self).add("Project", project_tag)
 
+        # Address the API box by Name tag: a deploy of the API stack replaces
+        # the instance, so a hardcoded id goes stale until this stack is
+        # redeployed. instance_id stays an explicit override.
+        instance_name_tag = f"{project_tag}-api"
         environment = {
             "PROJECT": project_tag,
             "API_BASE_URL": api_base_url.rstrip("/"),
+            "INSTANCE_NAME_TAG": instance_name_tag,
         }
         if instance_id:
             environment["INSTANCE_ID"] = instance_id
@@ -69,17 +74,22 @@ class PipelineStack(Stack):
         )
         if scheduler_secret is not None:
             scheduler_secret.grant_read(trigger_fn)
-        if instance_id:
-            trigger_fn.add_to_role_policy(
-                iam.PolicyStatement(
-                    sid="SsmSendCommand",
-                    actions=["ssm:SendCommand"],
-                    resources=[
-                        f"arn:aws:ssm:{self.region}::document/AWS-RunShellScript",
-                        f"arn:aws:ec2:{self.region}:{self.account}:instance/{instance_id}",
-                    ],
-                )
+        trigger_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="SsmSendCommandDocument",
+                actions=["ssm:SendCommand"],
+                resources=[f"arn:aws:ssm:{self.region}::document/AWS-RunShellScript"],
             )
+        )
+        # Scoped by tag, not instance id, so it survives instance replacement.
+        trigger_fn.add_to_role_policy(
+            iam.PolicyStatement(
+                sid="SsmSendCommandTaggedInstance",
+                actions=["ssm:SendCommand"],
+                resources=[f"arn:aws:ec2:{self.region}:{self.account}:instance/*"],
+                conditions={"StringEquals": {"ssm:resourceTag/Name": instance_name_tag}},
+            )
+        )
 
         asl = json.loads(ASL_PATH.read_text(encoding="utf-8"))
         state_machine = sfn.StateMachine(
@@ -154,6 +164,7 @@ class PipelineStack(Stack):
                 "SUNSET_PARAM": sunset_param.parameter_name,
                 "RDS_ID": rds_identifier,
                 "INSTANCE_ID": instance_id or "",
+                "INSTANCE_NAME_TAG": instance_name_tag,
                 "RULE_NAMES": ",".join(rule_names),
             },
         )

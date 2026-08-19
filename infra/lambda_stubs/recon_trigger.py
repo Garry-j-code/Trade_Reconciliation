@@ -41,8 +41,23 @@ def _post_recon() -> dict[str, Any]:
         return {"ok": False, "status": exc.code, "body": err_body}
 
 
+def _ssm_target() -> dict[str, Any]:
+    """Address the API box by Name tag so it survives instance replacement.
+
+    A CDK deploy of the API stack replaces the instance (the code asset key
+    rides in UserData), which silently orphaned a hardcoded instance id.
+    INSTANCE_ID still wins when set, as an explicit override.
+    """
+    instance_id = (os.environ.get("INSTANCE_ID") or "").strip()
+    if instance_id:
+        return {"InstanceIds": [instance_id]}
+    name_tag = (os.environ.get("INSTANCE_NAME_TAG") or "").strip()
+    if not name_tag:
+        raise RuntimeError("Set INSTANCE_ID or INSTANCE_NAME_TAG for the API instance")
+    return {"Targets": [{"Key": "tag:Name", "Values": [name_tag]}]}
+
+
 def _run_memory_writer() -> dict[str, Any]:
-    instance_id = os.environ["INSTANCE_ID"]
     ssm = boto3.client("ssm")
     script = (
         "set -euo pipefail\n"
@@ -55,18 +70,17 @@ def _run_memory_writer() -> dict[str, Any]:
         "/opt/trade-recon/venv/bin/python -m backend.agent.memory_writer\n"
     )
     resp = ssm.send_command(
-        InstanceIds=[instance_id],
         DocumentName="AWS-RunShellScript",
         Comment="trade-recon memory writer (Titan backfill; skip if caught up)",
         Parameters={"commands": [script]},
         TimeoutSeconds=120,
+        **_ssm_target(),
     )
     command_id = resp["Command"]["CommandId"]
     return {"ok": True, "command_id": command_id}
 
 
 def _run_daily_blotter() -> dict[str, Any]:
-    instance_id = os.environ["INSTANCE_ID"]
     ssm = boto3.client("ssm")
     script = (
         "set -euo pipefail\n"
@@ -87,11 +101,11 @@ def _run_daily_blotter() -> dict[str, Any]:
         "--lookback-days 5 --n-trades 40\n"
     )
     resp = ssm.send_command(
-        InstanceIds=[instance_id],
         DocumentName="AWS-RunShellScript",
         Comment="trade-recon daily blotter (fetch if key present; generate+ingest+match+investigate)",
         Parameters={"commands": [script]},
         TimeoutSeconds=1800,
+        **_ssm_target(),
     )
     return {"ok": True, "command_id": resp["Command"]["CommandId"]}
 
