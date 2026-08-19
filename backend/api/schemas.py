@@ -14,6 +14,9 @@ from backend.agent.enums import RootCause, SuggestedAction
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     db: Literal["connected", "unavailable"]
+    # Lets the console detect a site published without Cognito config: if the
+    # API enforces auth but config.json says otherwise, the app must not boot.
+    auth: Literal["required", "disabled"] = "disabled"
 
 
 class BreaksByType(BaseModel):

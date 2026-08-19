@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { changePassword as cognitoChangePassword, refreshSession, signIn } from "./cognito";
-import { loadRuntimeConfig, type RuntimeConfig } from "./config";
+import { ConfigError, loadRuntimeConfig, type RuntimeConfig } from "./config";
 import {
   clearTokens,
   identityFromTokens,
@@ -21,6 +21,8 @@ import {
 type AuthState = {
   ready: boolean;
   config: RuntimeConfig | null;
+  /** Set when the deployment itself is broken (see ConfigError); blocks boot. */
+  configError: string | null;
   tokens: TokenSet | null;
   displayName: string;
   login: (username: string, password: string) => Promise<void>;
@@ -33,12 +35,23 @@ const AuthContext = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
   const [tokens, setTokens] = useState<TokenSet | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const cfg = await loadRuntimeConfig();
+      let cfg: RuntimeConfig;
+      try {
+        cfg = await loadRuntimeConfig();
+      } catch (err) {
+        if (cancelled) return;
+        setConfigError(
+          err instanceof ConfigError ? err.message : "Could not load the app configuration.",
+        );
+        setReady(true);
+        return;
+      }
       if (cancelled) return;
       setConfig(cfg);
       if (cfg.authDisabled) {
@@ -115,13 +128,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       ready,
       config,
+      configError,
       tokens,
       displayName,
       login,
       logout,
       changePassword: changeUserPassword,
     }),
-    [ready, config, tokens, displayName, login, logout, changeUserPassword],
+    [ready, config, configError, tokens, displayName, login, logout, changeUserPassword],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

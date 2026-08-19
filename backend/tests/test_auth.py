@@ -37,6 +37,18 @@ def test_health_public_when_auth_on(auth_client: TestClient) -> None:
     assert response.json()["status"] == "ok"
 
 
+def test_health_reports_auth_required(auth_client: TestClient) -> None:
+    """The console reads this to detect a site published without config.json."""
+    assert auth_client.get("/health").json()["auth"] == "required"
+
+
+def test_health_reports_auth_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COGNITO_USER_POOL_ID", raising=False)
+    monkeypatch.delenv("AUTH_DISABLED", raising=False)
+    with TestClient(create_app()) as client:
+        assert client.get("/health").json()["auth"] == "disabled"
+
+
 def test_summary_unauthenticated_is_401(auth_client: TestClient) -> None:
     response = auth_client.get("/api/summary")
     assert response.status_code == 401
