@@ -231,6 +231,31 @@ def last_completed_us_session(
     raise ValueError(f"No US equity session found on or before {as_of.isoformat()}")
 
 
+def last_cached_us_session(
+    bars: pd.DataFrame,
+    as_of: date,
+    closed: set[date],
+) -> date:
+    """Newest session that actually has bars, at or before ``as_of``.
+
+    The market-data provider publishes T-1 on this plan: grouped-daily is
+    denied and per-ticker ``/prev`` returns the prior session, so the session
+    that just closed is still missing when the EOD job fetches. Anchoring on
+    the newest cached session reconciles that one instead of failing on a
+    session with no bars.
+    """
+    limit = last_completed_us_session(as_of, closed)
+    if bars.empty or "date" not in bars.columns:
+        raise ValueError("Market-data cache has no bars; run `uv run fetch-market-data`")
+    sessions = {parse_iso_date(str(value)[:10]) for value in bars["date"].dropna().unique()}
+    eligible = [d for d in sessions if d <= limit and d.weekday() < 5 and d not in closed]
+    if not eligible:
+        raise ValueError(
+            f"Market-data cache has no session on or before {limit.isoformat()}"
+        )
+    return max(eligible)
+
+
 def prior_us_sessions(
     n: int,
     *,

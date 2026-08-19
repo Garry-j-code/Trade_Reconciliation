@@ -34,7 +34,7 @@ from backend.data.generator import (
     closed_market_dates,
     default_output_dir,
     delete_generated_trade_files,
-    last_completed_us_session,
+    last_cached_us_session,
     load_market_cache,
     parse_iso_date,
     prior_us_sessions,
@@ -197,9 +197,10 @@ def run_daily_blotter(
         sessions = [trade_date]
     else:
         n = max(1, int(backfill_sessions))
-        sessions = prior_us_sessions(n, as_of=today, closed=closed)
-        if n == 1:
-            sessions = [last_completed_us_session(today, closed)]
+        # Anchor on the newest session with bars, not the one that just closed:
+        # the provider lags a session, so the latter has no data at fetch time.
+        anchor = last_cached_us_session(market.bars, today, closed)
+        sessions = [anchor] if n == 1 else prior_us_sessions(n, as_of=anchor, closed=closed)
 
     result = DailyBlotterResult(
         trade_dates=[d.isoformat() for d in sessions],

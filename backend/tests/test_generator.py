@@ -36,6 +36,7 @@ from backend.data.generator import (
     closed_market_dates,
     generate_corporate_action_breaks,
     generate_trades,
+    last_cached_us_session,
     last_completed_us_session,
     load_market_cache,
     next_business_day,
@@ -584,6 +585,41 @@ def test_last_completed_us_session_skips_weekend_and_holiday() -> None:
     days = prior_us_sessions(3, as_of=date(2024, 6, 3), closed=closed)
     assert days[-1] == date(2024, 6, 3)
     assert date(2024, 5, 27) not in days
+
+
+def test_last_cached_us_session_lags_to_newest_bars() -> None:
+    """The provider publishes T-1, so the just-closed session has no bars yet."""
+    bars = pd.DataFrame(
+        {
+            "ticker": ["AAPL", "AAPL", "MSFT"],
+            "date": ["2024-05-30", "2024-05-31", "2024-05-31"],
+        }
+    )
+    # 2024-06-03 is a Monday; 05-31 is the newest session actually cached.
+    assert last_cached_us_session(bars, date(2024, 6, 3), set()) == date(2024, 5, 31)
+
+
+def test_last_cached_us_session_ignores_future_and_closed_sessions() -> None:
+    bars = pd.DataFrame(
+        {
+            "ticker": ["AAPL", "AAPL", "AAPL"],
+            "date": ["2024-05-24", "2024-05-27", "2024-06-10"],
+        }
+    )
+    closed = {date(2024, 5, 27)}
+    # 05-27 is a holiday and 06-10 is past as_of, so 05-24 is the anchor.
+    assert last_cached_us_session(bars, date(2024, 5, 28), closed) == date(2024, 5, 24)
+
+
+def test_last_cached_us_session_raises_on_empty_cache() -> None:
+    with pytest.raises(ValueError, match="no bars"):
+        last_cached_us_session(pd.DataFrame(), date(2024, 6, 3), set())
+    with pytest.raises(ValueError, match="no session on or before"):
+        last_cached_us_session(
+            pd.DataFrame({"ticker": ["AAPL"], "date": ["2024-07-01"]}),
+            date(2024, 6, 3),
+            set(),
+        )
 
 
 def test_dated_generate_is_idempotent(memory_cache: MarketCache) -> None:
