@@ -119,20 +119,21 @@ class PipelineStack(Stack):
             ],
         )
 
-        if instance_id:
-            events.Rule(
-                self,
-                "DailyMemoryRule",
-                rule_name=f"{project_tag}-daily-memory",
-                description="Daily 07:00 UTC — agent memory backfill (Titan embed if needed; skip if caught up)",
-                schedule=events.Schedule.cron(minute="0", hour="7"),
-                targets=[
-                    targets.LambdaFunction(
-                        trigger_fn,
-                        event=events.RuleTargetInput.from_object({"action": "memory"}),
-                    )
-                ],
-            )
+        # Not gated on instance_id: the trigger Lambda resolves the API box by
+        # Name tag, so this rule must exist whether or not an id is pinned.
+        events.Rule(
+            self,
+            "DailyMemoryRule",
+            rule_name=f"{project_tag}-daily-memory",
+            description="Daily 07:00 UTC — agent memory backfill (Titan embed if needed; skip if caught up)",
+            schedule=events.Schedule.cron(minute="0", hour="7"),
+            targets=[
+                targets.LambdaFunction(
+                    trigger_fn,
+                    event=events.RuleTargetInput.from_object({"action": "memory"}),
+                )
+            ],
+        )
 
         pinned = (sunset_date or "").strip()[:10]
         sunset = pinned or (

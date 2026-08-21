@@ -183,7 +183,7 @@ export function BreakDetail() {
         <div>
           <AgentPanel detail={detail} />
           <div className="panel">
-            <h2>Human decision</h2>
+            <h2>Analyst decision</h2>
             <p className="muted">
               Approve applies the suggested fix to the books, then marks the break
               resolved. Reject records that the suggestion is wrong and leaves the
