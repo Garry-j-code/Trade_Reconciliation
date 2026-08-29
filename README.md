@@ -309,20 +309,6 @@ Local development: `AUTH_DISABLED=true` in `.env`, `uv run serve-api`, `cd front
 | NAT Gateway | **$0** | Not deployed |
 | Second RDS | **$0** | Not created |
 
-### Pause after ~1 month (keep data)
-
-```bash
-export AWS_PROFILE=trade-recon-8948
-uv run stop-billing                 # or ./infra/scripts/stop-product.sh
-uv run start-product                # RDS start takes minutes
-```
-
-Stops EventBridge rules, **stops** EC2, **stops** RDS. Does **not** delete the market-data S3 bucket or RDS.
-
-**Still bills after pause:** RDS storage (and AWS auto-starts a stopped DB after 7 days), CloudFront + frontend S3 (pennies), Secrets Manager (~$0.40/secret), market-data S3 (cheap — do not destroy). For ~$0 delete RDS yourself (snapshots can still bill).
-
-Sunset watcher: SSM `/trade-recon/product-sunset-date` (currently 2026-09-13 from this deploy). Daily 12:00 UTC Lambda runs the same stop path.
-
 ### Full stack teardown (still keeps RDS + market-data S3)
 
 ```bash
@@ -331,7 +317,7 @@ cd infra && source .venv/bin/activate
 cdk destroy TradeReconFrontend TradeReconEc2Api TradeReconPipeline TradeReconAuth --force
 ```
 
-To **pause** without destroying stacks, `uv run python -m backend.ops.billing stop` disables EventBridge rules and stops EC2 + RDS. Stopped RDS still bills storage and AWS **auto-restarts** a stopped instance after 7 days — destroy or snapshot+delete if you need a hard stop. There is **no NAT Gateway** to forget.
+There is **no NAT Gateway** to forget.
 
 ## Deploy (AWS CDK)
 
