@@ -8,7 +8,7 @@ This is a full product surface — FastAPI + React console, Cognito login, weekd
 
 ## Current phase
 
-**Product hardening.** CloudFront + Cognito, FastAPI on a **t4g.micro** in the RDS VPC, weekday EventBridge recon. IaC is **AWS CDK (Python)** in [`infra/`](infra/README.md).
+**Product hardening (step 9).** CloudFront + Cognito, FastAPI on a **t4g.micro** in the RDS VPC, weekday automated blotter, Bedrock investigate on rematch and after EOD. IaC is **AWS CDK (Python)** in [`infra/`](infra/README.md). Internal design notes live under `docs/` locally (gitignored — not on GitHub).
 
 Large Parquet caches (`backend/data/cache/`, generated/normalized/matched trades) are **gitignored**. Re-fetch or restore from S3 (`trade-recon-market-data-gagan-8948-us-east-1`); do not commit bars.
 
@@ -166,13 +166,13 @@ uv run uvicorn backend.api.main:app --reload
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Process up; `db` is `connected` or `unavailable` |
-| GET | `/api/summary` | Trade counts, % clean-matched, open breaks by type, notional at risk |
+| GET | `/api/summary` | Dashboard metrics (see below); optional `from_date` / `to_date` on `trade_date` |
 | GET | `/api/breaks` | Filterable list (`desk`, `symbol`, `break_type`, date range) + pagination. Chart/filter `break_type` is agent `root_cause` (Unclassified until investigated; Others is a rare-type rollup). Matcher `break_type` stays a fact on the row. |
 | GET | `/api/breaks/{id}` | Side-by-side broker vs desk + latest suggestion |
 | GET | `/api/matches` | Optional match list |
 | POST | `/api/recon/run` | Default **rematch RDS** (`normalized_trades`); does **not** read `backend/data/generated/*.parquet`. Then queues Bedrock investigate in the background. `mode=ingest` still loads Parquet (laptop). Cap via `RECON_TIMEOUT_SECONDS` (default 120). |
 | GET | `/api/recon/investigate-status` | Poll the post-rematch investigate job (`job_id` optional). No LLM call. |
-| POST | `/api/breaks/{id}/approve` | Human approve (always writes `audit_log`; never auto-approves) |
+| POST | `/api/breaks/{id}/approve` | Human approve — applies the suggested **book fix** to `normalized_trades` when applicable (`amend_price`, `cancel_duplicate`, etc.); always writes `audit_log` + `agent_memory` |
 | POST | `/api/breaks/{id}/reject` | Reject with note |
 | POST | `/api/breaks/{id}/override` | Override/resolve with note |
 | POST | `/api/breaks/{id}/investigate` | Queue agent investigate (writes `resolution_suggestions` only; cap 5 tools). Body: `{"message":"…","provider":"stub"|"bedrock"}`. Returns a job id immediately. 503 if Bedrock is denied. |
@@ -193,7 +193,9 @@ uv run investigate-breaks --break-id <uuid> --provider stub
 uv run write-agent-memory --embed-provider stub
 ```
 
-Weekday `uv run daily-blotter` (EventBridge/SSM) matches first, then auto-investigates **new open breaks with no suggestion** (Nova Lite, max 5 tools/break). Failures on one break are logged and skipped. Pipeline matching never imports the agent. `--skip-investigate` runs generate/match only.
+Weekday `uv run daily-blotter` (EventBridge → Lambda → SSM on EC2) matches first, then auto-investigates **new open breaks with no suggestion** (Nova Lite, max 5 tools/break). Failures on one break are logged and skipped. Pipeline matching never imports the agent. `--skip-investigate` runs generate/match only.
+
+The blotter anchors on the **newest cached US session with bars** (`last_cached_us_session`), not necessarily the calendar day that just closed — Massive per-ticker data can lag one session after the close. On EC2, `generated/*.parquet` is deleted after a successful RDS load (recreated on the next run).
 
 Backfill existing open breaks without suggestions (laptop or EC2):
 
@@ -228,7 +230,20 @@ npm install
 npm run dev
 ```
 
-Pages: Dashboard (summary cards + break-type chart), Breaks (filters), Break detail (broker vs desk + agent panel, approve/reject/override). **Investigate** is a bottom-right chat: it queues Bedrock and polls the job; it is not a stub button. Chart and type filter use agent `root_cause` (Unclassified until investigated; rare types roll up as Others). Matcher types remain facts, not the chart series.
+Pages: Dashboard (summary cards + break-type chart + date-range filter), Breaks (sortable table, status/date/type filters), Break detail (broker vs desk + agent panel, approve/reject/override, audit trail). **Investigate** is a bottom-right chat: it queues Bedrock and polls the job; it is not a stub button. Chart and type filter use agent `root_cause` (Unclassified until investigated; rare types roll up as Others). Matcher types remain facts, not the chart series. UI follows the OS light/dark setting (royal-blue theme). Header menu includes **Change password** (Cognito; hosted only).
+
+### Dashboard metrics
+
+Counts are by unique economic **`pair_id`**, not raw legs or match rows (split-fill can produce multiple match rows for one pair):
+
+| Card | Meaning |
+|---|---|
+| **Total trades** | Distinct `pair_id` in scope (broker + desk legs are shown separately as context) |
+| **Matched** | Distinct `pair_id` with at least one match |
+| **% clean-matched** | `matched / total` pairs |
+| **Open breaks** | Open break records in the date range |
+
+Date-range filters on Dashboard and Breaks use a single picker (start + end on `trade_date`).
 
 ## Architecture (AWS vs local)
 
@@ -238,11 +253,12 @@ flowchart LR
     CF[CloudFront]
     S3UI[S3 dashboard]
     COG[Cognito]
-    EC2[EC2 t4g.micro FastAPI]
+    EC2[EC2 t4g.micro FastAPI + blotter]
     RDS[(RDS trade-recon-postgres)]
     MD[S3 market-data cache]
-    EB[EventBridge]
-    SFN[Step Functions]
+    EB[EventBridge cron]
+    LAM[Trigger Lambda]
+    SSM[SSM Run Command]
     BR[Bedrock Nova Lite]
     CF --> S3UI
     CF --> EC2
@@ -250,8 +266,9 @@ flowchart LR
     EC2 --> MD
     EC2 --> BR
     EC2 --> COG
-    EB --> SFN
-    SFN --> EC2
+    EB --> LAM
+    LAM --> SSM
+    SSM --> EC2
   end
   Analyst[Analyst browser] --> CF
   Analyst --> COG
@@ -265,13 +282,15 @@ flowchart LR
 
 CloudFront is the only public HTTPS entry. EC2:80 accepts the CloudFront origin-facing prefix list only (not `0.0.0.0/0`). RDS:5432 is the API security group plus a laptop `/32` — never public. There is no NAT Gateway and no second RDS.
 
+**Why Lambda?** EventBridge fires on a schedule; a small **trigger Lambda** starts long jobs on EC2 via **SSM** (daily blotter, memory backfill) or can `POST /api/recon/run` with a scheduler secret. The recon pipeline itself runs on EC2, not in Lambda. Scheduled jobs target the API instance by **Name tag** so they survive instance replacement.
+
 ## How a client operates
 
-1. Open `https://d1a8rtzx54qkw.cloudfront.net` and sign in (email/password). Demo analyst is seeded by CDK; get the password from SSM `/trade-recon/demo-analyst-password` (SecureString) and **change it**.
-2. Dashboard shows match rate, breaks by **display type** (agent `root_cause`; Unclassified until investigated; Others for rare types), and notional at risk.
-3. **Run reconciliation** rematches the book already in **RDS** (not `generated/*.parquet`), then queues Bedrock investigate in the background — poll `/api/recon/investigate-status`. Weekdays **21:30 UTC** EventBridge runs SSM `daily-blotter` (generate/ingest/match on EC2; hosted blotter then deletes `generated/*.parquet`).
-4. Open a break, use the bottom-right **Investigate** chat (optional `message`; agent writes `resolution_suggestions` only; may call `search_similar_breaks`), then **Approve**, **Reject**, or **Override** with a note. Every decision writes `audit_log` and upserts `agent_memory` (Titan embed; row kept if embed fails).
-5. Daily **07:00 UTC** a memory backfill runs on the instance (SSM). It embeds any HITL decisions that missed approve-time write, then **skips** when caught up. It does **not** run a nightly Converse job.
+1. Open `https://d1a8rtzx54qkw.cloudfront.net` and sign in (email/password). Demo analyst is seeded by CDK; get the password from SSM `/trade-recon/demo-analyst-password` (SecureString) and **change it** (header menu → Change password).
+2. Dashboard shows pair-level match rate, breaks by **display type** (agent `root_cause`; Unclassified until investigated; Others for rare types), notional at risk, and recent open breaks — filter by date range as needed.
+3. **Run reconciliation** rematches the book already in **RDS** (not `generated/*.parquet`), then queues Bedrock investigate in the background — the UI polls until investigation finishes. Weekdays **21:30 UTC**: EventBridge → Lambda → SSM `daily-blotter` on EC2 (fetch Massive → S3 cache → generate/ingest/match; deletes `generated/*.parquet` after RDS load).
+4. Open a break, use the bottom-right **Investigate** chat (optional analyst note; agent writes `resolution_suggestions` only), then **Approve** (applies book fix when the suggestion calls for it), **Reject**, or **Override** with a note. Every decision writes `audit_log` and upserts `agent_memory` (Titan embed; row kept if embed fails). Evidence is shown in plain English, not internal tool names.
+5. Daily **07:00 UTC**: EventBridge → Lambda → SSM memory backfill on EC2. Embeds any HITL decisions that missed approve-time write, then **skips** when caught up. Does **not** run a nightly Converse job.
 
 Local development: `AUTH_DISABLED=true` in `.env`, `uv run serve-api`, `cd frontend && npm run dev`. Hosted UI always requires Cognito.
 
@@ -283,7 +302,7 @@ Local development: `AUTH_DISABLED=true` in `.env`, `uv run serve-api`, `cd front
 | EC2 t4g.micro | ~$6 on-demand | Free-tier hours may apply |
 | CloudFront + frontend S3 | pennies | Portfolio traffic |
 | Cognito | $0 | 50k MAU free tier; one user |
-| Step Functions + Lambda + EventBridge | ~$0 | Few standard transitions/week |
+| Lambda + EventBridge + SSM | ~$0 | Short trigger invocations; long work on EC2 |
 | Secrets Manager | ~$0.40 per secret | Demo password + scheduler secret |
 | Bedrock Nova Lite | on-demand, only when investigating | Titan embed: one small vector per human decision |
 | Bedrock Titan Embed | pennies | Approve-time + 07:00 backfill if behind |
@@ -331,6 +350,8 @@ cdk deploy TradeReconAuth TradeReconEc2Api TradeReconFrontend TradeReconPipeline
 Login URL: `https://d1a8rtzx54qkw.cloudfront.net`  
 Health (public): `https://d1a8rtzx54qkw.cloudfront.net/health`  
 Demo password (once): `aws ssm get-parameter --name /trade-recon/demo-analyst-password --with-decryption --query Parameter.Value --output text`
+
+`npm run build` + CDK deploy writes Cognito IDs into `frontend/dist/config.json`. The hosted app fails fast if that file is missing — do not publish the static bucket without deploying `TradeReconAuth` + `TradeReconFrontend` together.
 
 Tear down (does **not** destroy RDS or the market-data bucket):
 
