@@ -14,11 +14,15 @@ from backend.agent.enums import RootCause, SuggestedAction
 class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     db: Literal["connected", "unavailable"]
+    # Lets the console detect a site published without Cognito config: if the
+    # API enforces auth but config.json says otherwise, the app must not boot.
+    auth: Literal["required", "disabled"] = "disabled"
 
 
 class BreaksByType(BaseModel):
     break_type: str
     count: int
+    members: list[str] = Field(default_factory=list)
 
 
 class SummaryResponse(BaseModel):
@@ -36,18 +40,26 @@ class SummaryResponse(BaseModel):
     pct_clean_matched: float
     breaks_by_type: list[BreaksByType]
     notional_at_risk: float
+    break_type_options: list[str] = Field(default_factory=list)
+    others_break_types: list[str] = Field(default_factory=list)
 
 
 class BreakListItem(BaseModel):
     break_id: UUID
     break_type: str
+    display_type: str | None = None
     status: str
     symbol: str | None = None
     trade_date: date | None = None
+    executed_at: datetime | None = None
     pair_id: str | None = None
     desk: str | None = None
     notional_at_risk: float = 0.0
     created_at: datetime | None = None
+    last_action: str | None = None
+    last_actor: str | None = None
+    last_decided_at: datetime | None = None
+    last_note: str | None = None
 
 
 class PaginatedBreaks(BaseModel):
@@ -55,6 +67,8 @@ class PaginatedBreaks(BaseModel):
     total: int
     page: int
     page_size: int
+    break_type_options: list[str] = Field(default_factory=list)
+    others_break_types: list[str] = Field(default_factory=list)
 
 
 class NormalizedTradeOut(BaseModel):
@@ -64,7 +78,9 @@ class NormalizedTradeOut(BaseModel):
     source: str
     symbol: str
     trade_date: date
+    executed_at: datetime | None = None
     settlement_date: date
+    settlement_datetime: datetime | None = None
     side: str
     quantity: float
     price: float
@@ -101,12 +117,25 @@ class SuggestionOut(BaseModel):
     review_route: str = "manual_review"
 
 
+class AuditDecisionOut(BaseModel):
+    audit_id: UUID
+    actor: str
+    action: str
+    override_note: str | None = None
+    created_at: datetime | None = None
+    suggestion_id: UUID | None = None
+    root_cause: str | None = None
+    suggested_action: str | None = None
+    explanation: str | None = None
+
+
 class BreakDetailResponse(BaseModel):
     break_id: UUID
     break_type: str
     status: str
     symbol: str | None = None
     trade_date: date | None = None
+    executed_at: datetime | None = None
     pair_id: str | None = None
     desk: str | None = None
     notional_at_risk: float = 0.0
@@ -117,6 +146,7 @@ class BreakDetailResponse(BaseModel):
     desk_side: SideBySide
     suggestion: SuggestionOut
     review_routing: Literal["one_click", "manual_review"]
+    decisions: list[AuditDecisionOut] = Field(default_factory=list)
 
 
 class MatchListItem(BaseModel):
@@ -138,7 +168,7 @@ class PaginatedMatches(BaseModel):
 class ReconRunRequest(BaseModel):
     input_dir: str | None = None
     replace: bool = False
-    mode: str = "daily"
+    mode: str = "rematch"
     trade_date: date | None = None
 
 
@@ -151,6 +181,21 @@ class ReconRunResponse(BaseModel):
     breaks_by_type: dict[str, int]
     elapsed_seconds: float
     db_loaded: bool
+    investigate_status: str | None = None
+    investigate_job_id: str | None = None
+    investigate_attempted: int | None = None
+    investigate_written: int | None = None
+    investigate_failed: int | None = None
+
+
+class InvestigateStatusResponse(BaseModel):
+    """In-memory status of the post-rematch Bedrock investigation job."""
+
+    job_id: str | None = None
+    status: str
+    attempted: int | None = None
+    written: int | None = None
+    failed: int | None = None
 
 
 class ApprovalRequest(BaseModel):
@@ -175,10 +220,24 @@ class ApprovalResponse(BaseModel):
 
 
 class InvestigateRequest(BaseModel):
+    message: str = Field(
+        default="",
+        max_length=4000,
+        description="Analyst note; empty means investigate with break context only",
+    )
     provider: str | None = Field(
         default=None, description="stub | bedrock (default: AGENT_LLM_PROVIDER)"
     )
     tools_enabled: bool = True
+
+
+class BreakInvestigateAccepted(BaseModel):
+    """POST /investigate returns immediately so CloudFront does not 504."""
+
+    job_id: str
+    break_id: UUID
+    status: str
+    message: str = ""
 
 
 class DecisionRequest(BaseModel):
@@ -217,3 +276,13 @@ class AgentSuggestionOut(BaseModel):
     tool_calls: int = 0
     review_route: str = "manual_review"
     suggestion_id: UUID | None = None
+
+
+class BreakInvestigateJobOut(BaseModel):
+    job_id: str
+    break_id: UUID
+    status: str
+    message: str = ""
+    reply: str | None = None
+    error: str | None = None
+    suggestion: AgentSuggestionOut | None = None

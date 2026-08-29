@@ -156,7 +156,9 @@ class Ec2ApiStack(Stack):
                 sid="SsmDatabaseUrl",
                 actions=["ssm:GetParameter", "ssm:GetParameters"],
                 resources=[
-                    f"arn:aws:ssm:{self.region}:{self.account}:parameter{ssm_parameter_name}"
+                    f"arn:aws:ssm:{self.region}:{self.account}:parameter{ssm_parameter_name}",
+                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/trade-recon/massive-api-key",
+                    f"arn:aws:ssm:{self.region}:{self.account}:parameter/trade-recon/product-sunset-date",
                 ],
             )
         )
@@ -174,7 +176,7 @@ class Ec2ApiStack(Stack):
             role.add_to_policy(
                 iam.PolicyStatement(
                     sid="MarketDataRead",
-                    actions=["s3:GetObject", "s3:ListBucket"],
+                    actions=["s3:GetObject", "s3:PutObject", "s3:ListBucket"],
                     resources=[
                         f"arn:aws:s3:::{existing_market_data_bucket}",
                         f"arn:aws:s3:::{existing_market_data_bucket}/*",
@@ -222,7 +224,7 @@ class Ec2ApiStack(Stack):
             "ApiSourceAsset",
             path=str(bundle),
             ignore_mode=IgnoreMode.GLOB,
-            exclude=["**/.env", "**/.env.*"],
+            exclude=["**/.env", "**/.env.*", "**/docs/**", "docs"],
         )
         code_asset.grant_read(role)
 
@@ -270,7 +272,7 @@ class Ec2ApiStack(Stack):
             security_group=api_sg,
             role=role,
             user_data=user_data,
-            user_data_causes_replacement=True,
+            user_data_causes_replacement=False,
             associate_public_ip_address=True,
             require_imdsv2=True,
             detailed_monitoring=False,
@@ -306,6 +308,9 @@ class Ec2ApiStack(Stack):
 
         CfnOutput(self, "ApiElasticIp", value=eip.attr_public_ip)
         CfnOutput(self, "ApiOriginDns", value=self.api_origin_domain)
+        CfnOutput(self, "ApiInstanceId", value=instance.instance_id)
+        CfnOutput(self, "ApiCodeAssetBucket", value=code_asset.s3_bucket_name)
+        CfnOutput(self, "ApiCodeAssetKey", value=code_asset.s3_object_key)
         CfnOutput(self, "ApiPublicHttpUrl", value=f"http://{eip.attr_public_ip}")
         CfnOutput(self, "ApiHealthUrlDirect", value=f"http://{eip.attr_public_ip}/health")
         CfnOutput(

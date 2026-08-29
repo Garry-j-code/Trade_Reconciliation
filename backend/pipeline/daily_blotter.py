@@ -28,15 +28,18 @@ from backend.data.fetch_market_data import (
     run_fetch,
     upload_cache_to_s3,
 )
+from backend.data.eod_prev_backfill import backfill_last_weekday_from_prev
 from backend.data.generator import (
     GeneratorConfig,
     closed_market_dates,
     default_output_dir,
-    last_completed_us_session,
+    delete_generated_trade_files,
+    last_cached_us_session,
     load_market_cache,
     parse_iso_date,
     prior_us_sessions,
     run_generate,
+    should_delete_generated_after_db,
 )
 from backend.db.session import database_url_from_env
 from backend.pipeline.ingest import run_normalize
@@ -102,8 +105,11 @@ def _maybe_fetch(*, cache_dir: Path, lookback_days: int, skip_fetch: bool) -> di
         force=False,
     )
     summary = run_fetch(config)
+    prev_filled = backfill_last_weekday_from_prev(cache_dir)
+    if prev_filled:
+        summary = {**summary, "prev_backfill": prev_filled}
     bucket = (os.environ.get("S3_CACHE_BUCKET") or "").strip()
-    if bucket and not summary.get("s3_uploaded"):
+    if bucket:
         prefix = (os.environ.get("S3_CACHE_PREFIX") or "market-data").strip()
         region = (
             os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
@@ -191,9 +197,10 @@ def run_daily_blotter(
         sessions = [trade_date]
     else:
         n = max(1, int(backfill_sessions))
-        sessions = prior_us_sessions(n, as_of=today, closed=closed)
-        if n == 1:
-            sessions = [last_completed_us_session(today, closed)]
+        # Anchor on the newest session with bars, not the one that just closed:
+        # the provider lags a session, so the latter has no data at fetch time.
+        anchor = last_cached_us_session(market.bars, today, closed)
+        sessions = [anchor] if n == 1 else prior_us_sessions(n, as_of=anchor, closed=closed)
 
     result = DailyBlotterResult(
         trade_dates=[d.isoformat() for d in sessions],
@@ -238,6 +245,10 @@ def run_daily_blotter(
         result.match_count = match.match_rows
         result.break_count = match.break_rows
         result.db_loaded = result.db_loaded or bool(match.db_loaded)
+    if result.db_loaded and should_delete_generated_after_db():
+        dropped = delete_generated_trade_files(default_output_dir())
+        notes.append(f"deleted_generated={len(dropped)}")
+        logger.info("Removed %d generated blotter file(s) after RDS ingest", len(dropped))
     return result
 
 

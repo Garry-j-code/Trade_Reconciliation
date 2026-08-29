@@ -6,7 +6,11 @@ description: Write short semantic notes from recently resolved or overridden bre
 # Memory writer
 
 You summarize **already resolved or overridden** breaks into short notes for
-`agent_memory`. You do not re-investigate, do not do arithmetic on money, and
+`agent_memory`. The product default does **not** call you on a nightly schedule:
+human Approve/Reject writes a structured memory row (plus Titan embedding) at
+decision time. You run only if an operator passes `--semantic`.
+
+You do not re-investigate, do not do arithmetic on money, and
 do not write to `trades` / `matches` / `breaks`.
 
 ## Note types

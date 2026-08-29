@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -40,6 +41,11 @@ from backend.data.fetch_market_data import (
 
 logger = logging.getLogger(__name__)
 
+NYSE_TZ = ZoneInfo("America/New_York")
+# Regular session 09:30–16:00 ET (last fill can land in the final minute).
+_SESSION_OPEN = timedelta(hours=9, minutes=30)
+_SESSION_MINUTES = 6 * 60 + 30
+
 # ---------------------------------------------------------------------------
 # Output schemas (raw legs differ on purpose — see project_plan.md §4)
 # ---------------------------------------------------------------------------
@@ -48,7 +54,9 @@ BROKER_COLUMNS: tuple[str, ...] = (
     "broker_trade_id",
     "symbol",
     "trade_date",
+    "executed_at",
     "settlement_date",
+    "settlement_datetime",
     "side",
     "quantity",
     "price",
@@ -62,7 +70,9 @@ DESK_COLUMNS: tuple[str, ...] = (
     "blotter_id",
     "ticker",
     "trade_date",
+    "executed_at",
     "settle_date",
+    "settlement_datetime",
     "side",
     "qty",
     "px",
@@ -219,6 +229,31 @@ def last_completed_us_session(
             return current
         current = current - timedelta(days=1)
     raise ValueError(f"No US equity session found on or before {as_of.isoformat()}")
+
+
+def last_cached_us_session(
+    bars: pd.DataFrame,
+    as_of: date,
+    closed: set[date],
+) -> date:
+    """Newest session that actually has bars, at or before ``as_of``.
+
+    The market-data provider publishes T-1 on this plan: grouped-daily is
+    denied and per-ticker ``/prev`` returns the prior session, so the session
+    that just closed is still missing when the EOD job fetches. Anchoring on
+    the newest cached session reconciles that one instead of failing on a
+    session with no bars.
+    """
+    limit = last_completed_us_session(as_of, closed)
+    if bars.empty or "date" not in bars.columns:
+        raise ValueError("Market-data cache has no bars; run `uv run fetch-market-data`")
+    sessions = {parse_iso_date(str(value)[:10]) for value in bars["date"].dropna().unique()}
+    eligible = [d for d in sessions if d <= limit and d.weekday() < 5 and d not in closed]
+    if not eligible:
+        raise ValueError(
+            f"Market-data cache has no session on or before {limit.isoformat()}"
+        )
+    return max(eligible)
 
 
 def prior_us_sessions(
@@ -428,6 +463,43 @@ def _price_from_bar(row: Mapping[str, Any], rng: Any) -> float:
     return round(px, 4)
 
 
+def session_executed_at(
+    trade_date: date, rng: Any, *, fill_index: int = 0
+) -> datetime:
+    """Deterministic NYSE-hours timestamp on ``trade_date`` (America/New_York)."""
+    minute_of_session = int(rng.integers(0, _SESSION_MINUTES))
+    second = int(rng.integers(0, 60))
+    start = datetime(
+        trade_date.year, trade_date.month, trade_date.day, tzinfo=NYSE_TZ
+    ) + _SESSION_OPEN
+    return start + timedelta(
+        minutes=minute_of_session, seconds=second + fill_index * 3
+    )
+
+
+def _session_executed_at(
+    trade_date: date, rng: Any, *, fill_index: int = 0
+) -> datetime:
+    return session_executed_at(trade_date, rng, fill_index=fill_index)
+
+
+def settlement_datetime_et(settle: date) -> datetime:
+    """End of the NYSE cash session on the settlement date (not midnight)."""
+    return datetime(settle.year, settle.month, settle.day, 16, 0, 0, tzinfo=NYSE_TZ)
+
+
+def _settlement_datetime(settle: date) -> datetime:
+    return settlement_datetime_et(settle)
+
+
+def executed_at_from_stable_id(stable_id: str, trade_date: date) -> datetime:
+    """NYSE-session time on ``trade_date``, seeded from ``stable_id`` (idempotent)."""
+    digest = hashlib.sha256(str(stable_id).encode("utf-8")).digest()
+    seed = int.from_bytes(digest[:8], "big") % (2**32)
+    rng = np.random.default_rng(seed)
+    return session_executed_at(trade_date, rng)
+
+
 def _broker_row(
     *,
     trade_id: str,
@@ -440,12 +512,15 @@ def _broker_row(
     pair_id: str,
     account_id: str,
     currency: str,
+    executed_at: datetime,
 ) -> dict[str, Any]:
     return {
         "broker_trade_id": trade_id,
         "symbol": symbol,
         "trade_date": trade_date.isoformat(),
+        "executed_at": executed_at.isoformat(),
         "settlement_date": settle.isoformat(),
+        "settlement_datetime": _settlement_datetime(settle).isoformat(),
         "side": side,
         "quantity": float(quantity),
         "price": float(price),
@@ -469,12 +544,15 @@ def _desk_row(
     desk_code: str,
     trader: str,
     currency: str,
+    executed_at: datetime,
 ) -> dict[str, Any]:
     return {
         "blotter_id": trade_id,
         "ticker": symbol,
         "trade_date": trade_date.isoformat(),
+        "executed_at": executed_at.isoformat(),
         "settle_date": settle.isoformat(),
+        "settlement_datetime": _settlement_datetime(settle).isoformat(),
         "side": side,
         "qty": float(quantity),
         "px": float(price),
@@ -623,6 +701,8 @@ def _materialize_pair(
     price = float(base["price"])
     desk_code = str(base["desk_code"])
     trader = str(base["trader"])
+    executed_at = _session_executed_at(trade_date, rng)
+    fill_index = 0
 
     broker_rows: list[dict[str, Any]] = []
     desk_rows: list[dict[str, Any]] = []
@@ -633,7 +713,10 @@ def _materialize_pair(
         settle_date: date = settle,
         trade_id: str | None = None,
     ) -> str:
+        nonlocal fill_index
         tid = trade_id or _new_id("BRK", rng)
+        ts = executed_at + timedelta(seconds=fill_index * 3)
+        fill_index += 1
         broker_rows.append(
             _broker_row(
                 trade_id=tid,
@@ -646,6 +729,7 @@ def _materialize_pair(
                 pair_id=pair_id,
                 account_id=config.broker_account,
                 currency=config.currency,
+                executed_at=ts,
             )
         )
         return tid
@@ -670,6 +754,7 @@ def _materialize_pair(
                 desk_code=desk_code,
                 trader=trader,
                 currency=config.currency,
+                executed_at=executed_at,
             )
         )
         return tid
@@ -843,6 +928,7 @@ def generate_corporate_action_breaks(
 
         b_id = _new_id("BRK", rng)
         d_id = _new_id("DSK", rng)
+        executed_at = _session_executed_at(trade_date, rng)
         broker_rows.append(
             _broker_row(
                 trade_id=b_id,
@@ -855,6 +941,7 @@ def generate_corporate_action_breaks(
                 pair_id=pair_id,
                 account_id=config.broker_account,
                 currency=config.currency,
+                executed_at=executed_at,
             )
         )
         desk_rows.append(
@@ -870,6 +957,7 @@ def generate_corporate_action_breaks(
                 desk_code=str(rng.choice(config.desks)),
                 trader=str(rng.choice(config.traders)),
                 currency=config.currency,
+                executed_at=executed_at,
             )
         )
         truth_rows.append(
@@ -1006,6 +1094,38 @@ def write_generated_trades(
     }
     paths["summary"].write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return paths
+
+
+HOSTED_APP_ROOT = Path("/opt/trade-recon/app")
+
+
+def should_delete_generated_after_db(*, env: Mapping[str, str] | None = None) -> bool:
+    """True on the API EC2 (or when TRADE_RECON_DELETE_GENERATED is set).
+
+    Hosted rematch reads RDS. The next blotter run rewrites these files.
+    """
+    source = env if env is not None else os.environ
+    flag = (source.get("TRADE_RECON_DELETE_GENERATED") or "").strip().lower()
+    if flag in {"1", "true", "yes"}:
+        return True
+    if flag in {"0", "false", "no"}:
+        return False
+    return HOSTED_APP_ROOT.is_dir()
+
+
+def delete_generated_trade_files(output_dir: Path) -> list[str]:
+    """Remove blotter Parquet (and generation_summary.json) under ``output_dir``."""
+    removed: list[str] = []
+    if not output_dir.is_dir():
+        return removed
+    for path in sorted(output_dir.glob("*.parquet")):
+        path.unlink()
+        removed.append(str(path))
+    summary = output_dir / "generation_summary.json"
+    if summary.is_file():
+        summary.unlink()
+        removed.append(str(summary))
+    return removed
 
 
 def run_generate(config: GeneratorConfig) -> dict[str, Any]:

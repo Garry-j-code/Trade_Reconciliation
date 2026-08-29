@@ -1,31 +1,33 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ApiError,
   approveBreak,
   getBreak,
-  investigateBreak,
+  overrideBreak,
   rejectBreak,
 } from "../api/client";
 import { TERMINAL_STATUSES, type BreakDetailResponse } from "../api/types";
 import { AgentPanel } from "../components/AgentPanel";
+import { InvestigateChat } from "../components/InvestigateChat";
 import { TradeDiff } from "../components/TradeDiff";
-import { formatDate, formatUsd, labelize, shortId } from "../lib/format";
+import { formatDateTime, formatTradeTimestamp, formatUsd, labelize, shortId } from "../lib/format";
 
 export function BreakDetail() {
   const { id } = useParams<{ id: string }>();
   const [detail, setDetail] = useState<BreakDetailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState("");
-  const [busy, setBusy] = useState<"approve" | "reject" | "investigate" | null>(null);
+  const [busy, setBusy] = useState<"approve" | "reject" | "override" | null>(null);
+  const [chatOpen, setChatOpen] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
 
-  async function load() {
+  const load = useCallback(async () => {
     if (!id) return;
     const row = await getBreak(id);
     setDetail(row);
     setError(null);
-  }
+  }, [id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,7 +76,9 @@ export function BreakDetail() {
       const res = await approveBreak(breakId, {
         note: note.trim() || null,
       });
-      setFlash(`Approved. Status ${res.status}. Audit ${shortId(res.audit_id)}.`);
+      setFlash(
+        `Applied suggested fix. Status ${res.status}. Audit ${shortId(res.audit_id)}.`,
+      );
       setNote("");
       await load();
     } catch (err) {
@@ -107,22 +111,34 @@ export function BreakDetail() {
     }
   }
 
-  async function onInvestigate() {
-    setBusy("investigate");
+  async function onOverride() {
+    const trimmed = note.trim();
+    if (!trimmed) {
+      setError("A note is required to override.");
+      return;
+    }
+    setBusy("override");
     setFlash(null);
     setError(null);
     try {
-      await investigateBreak(breakId);
-      setFlash("Investigation finished. Suggestion panel updated.");
+      const res = await overrideBreak(breakId, {
+        note: trimmed,
+      });
+      setFlash(
+        `Overridden (books unchanged). Status ${res.status}. Audit ${shortId(res.audit_id)}.`,
+      );
+      setNote("");
       await load();
     } catch (err) {
-      const msg = err instanceof ApiError ? err.detail : "Investigate failed";
-      setError(
-        `Investigate failed${err instanceof ApiError && err.status ? ` (HTTP ${err.status})` : ""}: ${msg}. Bedrock may be unavailable — the rest of the console still works.`,
-      );
+      setError(err instanceof ApiError ? err.detail : "Override failed");
     } finally {
       setBusy(null);
     }
+  }
+
+  function onInvestigate() {
+    setError(null);
+    setChatOpen(true);
   }
 
   return (
@@ -150,7 +166,7 @@ export function BreakDetail() {
         </div>
         <div className="meta-item">
           <div className="k">Trade date</div>
-          <div className="v">{formatDate(detail.trade_date)}</div>
+          <div className="v">{formatTradeTimestamp(detail.executed_at, detail.trade_date)}</div>
         </div>
         <div className="meta-item">
           <div className="k">Notional at risk</div>
@@ -167,10 +183,12 @@ export function BreakDetail() {
         <div>
           <AgentPanel detail={detail} />
           <div className="panel">
-            <h2>Human decision</h2>
+            <h2>Analyst decision</h2>
             <p className="muted">
-              Approve or reject writes an audit log on the server. Rejected stays open;
-              resolved/overridden is terminal.
+              Approve applies the suggested fix to the books, then marks the break
+              resolved. Reject records that the suggestion is wrong and leaves the
+              break open for another look. Override force-closes the break with your
+              note and never changes trades.
             </p>
             <div className="field grow" style={{ marginTop: 10 }}>
               <label htmlFor="note">Note</label>
@@ -178,7 +196,7 @@ export function BreakDetail() {
                 id="note"
                 value={note}
                 onChange={(e) => setNote(e.target.value)}
-                placeholder="Required for reject. Optional for approve."
+                placeholder="Required for reject and override. Optional for approve."
                 disabled={locked}
               />
             </div>
@@ -188,29 +206,62 @@ export function BreakDetail() {
                 disabled={locked || busy !== null}
                 onClick={onApprove}
               >
-                {busy === "approve" ? "Approving…" : "Approve"}
+                {busy === "approve" ? "Applying…" : "Apply suggested fix and resolve"}
               </button>
               <button
                 className="btn btn-danger"
                 disabled={locked || busy !== null}
                 onClick={onReject}
               >
-                {busy === "reject" ? "Rejecting…" : "Reject"}
+                {busy === "reject" ? "Rejecting…" : "Reject suggestion"}
+              </button>
+              <button
+                className="btn"
+                disabled={locked || busy !== null}
+                onClick={onOverride}
+              >
+                {busy === "override" ? "Overriding…" : "Override (force-close)"}
               </button>
               <button
                 className="btn"
                 disabled={busy !== null}
                 onClick={onInvestigate}
               >
-                {busy === "investigate" ? "Investigating…" : "Investigate"}
+                Investigate
               </button>
             </div>
             {locked && (
               <p className="placeholder">This break is {detail.status} and cannot be decided again.</p>
             )}
           </div>
+          {(detail.decisions ?? []).length > 0 ? (
+            <div className="panel">
+              <h2>Decision history</h2>
+              <ul className="evidence">
+                {(detail.decisions ?? []).map((d) => (
+                  <li key={d.audit_id}>
+                    <div className="tool-name">
+                      {labelize(d.action)} · {d.actor} · {formatDateTime(d.created_at)}
+                    </div>
+                    <div className="tool-result">
+                      {d.override_note ? `Note: ${d.override_note}` : "No comment."}
+                      {d.suggested_action
+                        ? ` · Suggestion: ${labelize(d.root_cause)} → ${labelize(d.suggested_action)}`
+                        : ""}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </div>
       </div>
+      <InvestigateChat
+        breakId={breakId}
+        open={chatOpen}
+        onClose={() => setChatOpen(false)}
+        onSuggestionReady={load}
+      />
     </div>
   );
 }

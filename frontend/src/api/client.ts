@@ -4,12 +4,14 @@ import type {
   BreakDetailResponse,
   BreaksQuery,
   HealthResponse,
+  BreakInvestigateAccepted,
+  BreakInvestigateJob,
+  InvestigateStatusResponse,
   OverrideRequest,
   PaginatedBreaks,
   PaginatedMatches,
   ReconRunRequest,
   ReconRunResponse,
-  SuggestionOut,
   SummaryResponse,
 } from "./types";
 import { bearerToken, clearTokens } from "../auth/session";
@@ -32,9 +34,32 @@ function apiUrl(path: string): string {
   return `${BASE}${path}`;
 }
 
+function looksLikeHtml(text: string): boolean {
+  const trimmed = text.trim();
+  return /^<!doctype html/i.test(trimmed) || /<html[\s>]/i.test(trimmed);
+}
+
+function cdnGatewayMessage(status: number, text: string): string | null {
+  const html = looksLikeHtml(text);
+  const fromCloudFront =
+    /cloudfront/i.test(text) || /the request could not be satisfied/i.test(text);
+  if (status === 504 || (html && /gateway timeout|\b504\b/i.test(text))) {
+    return "Gateway timeout: the API did not respond in time. Wait a moment and try again, then refresh the dashboard.";
+  }
+  if (status === 502 || (html && /\b502\b/i.test(text))) {
+    return "Bad gateway: the API origin is unreachable. Try again in a moment.";
+  }
+  if (html && (fromCloudFront || status >= 500)) {
+    return "The CDN returned an HTML error instead of JSON. Try again in a moment.";
+  }
+  return null;
+}
+
 async function readDetail(res: Response): Promise<string> {
   const text = await res.text();
   if (!text) return res.statusText || `HTTP ${res.status}`;
+  const cdn = cdnGatewayMessage(res.status, text);
+  if (cdn) return cdn;
   try {
     const body: unknown = JSON.parse(text);
     if (body && typeof body === "object" && "detail" in body) {
@@ -54,6 +79,9 @@ async function readDetail(res: Response): Promise<string> {
     }
     return text;
   } catch {
+    if (looksLikeHtml(text)) {
+      return `HTTP ${res.status}: the API returned an HTML error page instead of JSON.`;
+    }
     return text;
   }
 }
@@ -109,8 +137,13 @@ export function getHealth(): Promise<HealthResponse> {
   return request<HealthResponse>("/health");
 }
 
-export function getSummary(): Promise<SummaryResponse> {
-  return request<SummaryResponse>("/api/summary");
+export function getSummary(query: { from_date?: string; to_date?: string } = {}): Promise<SummaryResponse> {
+  return request<SummaryResponse>(
+    `/api/summary${queryString({
+      from_date: query.from_date,
+      to_date: query.to_date,
+    })}`,
+  );
 }
 
 export function getBreaks(query: BreaksQuery = {}): Promise<PaginatedBreaks> {
@@ -120,6 +153,8 @@ export function getBreaks(query: BreaksQuery = {}): Promise<PaginatedBreaks> {
       symbol: query.symbol,
       break_type: query.break_type,
       date: query.trade_date,
+      from_date: query.from_date,
+      to_date: query.to_date,
       date_from: query.date_from,
       date_to: query.date_to,
       status: query.status,
@@ -141,11 +176,19 @@ export function getMatches(page = 1, pageSize = 25): Promise<PaginatedMatches> {
   );
 }
 
-export function runRecon(body: ReconRunRequest = { replace: true }): Promise<ReconRunResponse> {
+export function runRecon(body: ReconRunRequest = { mode: "rematch" }): Promise<ReconRunResponse> {
   return request<ReconRunResponse>("/api/recon/run", {
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+export function getInvestigateStatus(
+  jobId?: string | null,
+): Promise<InvestigateStatusResponse> {
+  return request<InvestigateStatusResponse>(
+    `/api/recon/investigate-status${queryString({ job_id: jobId ?? undefined })}`,
+  );
 }
 
 export function approveBreak(
@@ -168,9 +211,31 @@ export function rejectBreak(
   });
 }
 
-export function investigateBreak(id: string): Promise<SuggestionOut | BreakDetailResponse> {
-  return request<SuggestionOut | BreakDetailResponse>(`/api/breaks/${id}/investigate`, {
+export function overrideBreak(
+  id: string,
+  body: OverrideRequest,
+): Promise<ApprovalResponse> {
+  return request<ApprovalResponse>(`/api/breaks/${id}/override`, {
     method: "POST",
-    body: JSON.stringify({}),
+    body: JSON.stringify(body),
   });
+}
+
+export function startBreakInvestigate(
+  id: string,
+  message = "",
+): Promise<BreakInvestigateAccepted> {
+  return request<BreakInvestigateAccepted>(`/api/breaks/${id}/investigate`, {
+    method: "POST",
+    body: JSON.stringify({ message }),
+  });
+}
+
+export function getBreakInvestigateJob(
+  breakId: string,
+  jobId: string,
+): Promise<BreakInvestigateJob> {
+  return request<BreakInvestigateJob>(
+    `/api/breaks/${breakId}/investigate-jobs/${jobId}`,
+  );
 }

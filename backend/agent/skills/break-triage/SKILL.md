@@ -26,8 +26,9 @@ Hard cap: **5 tool calls**. Spend them. Do not wander.
 ## Second-wave tools (if budget remains)
 
 - `get_desk_metadata` — once, if a desk code is known and you need context on whether this desk is usually clean.
-- `get_similar_resolved_breaks` — after you have a working hypothesis, check precedent.
-- `get_relevant_memory` — **hypothesis only**. A retrieved note is not a verdict; confirm against this break's evidence.
+- `get_similar_resolved_breaks` — after you have a working hypothesis, check exact-type precedent.
+- `search_similar_breaks` — top-k similar **human Approve/Reject** cases from `agent_memory`. Hypothesis only; if you use a prior, copy its `root_cause` / `suggested_action` **enums**, never free text.
+- `get_relevant_memory` — synthesized pattern notes. **Hypothesis only.**
 
 ## Stop calling tools when
 

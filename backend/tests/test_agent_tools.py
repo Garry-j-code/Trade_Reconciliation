@@ -22,6 +22,7 @@ from backend.agent.tools import (
     get_relevant_memory,
     get_similar_resolved_breaks,
     get_trade_history,
+    search_similar_breaks,
     trade_history_stmt,
 )
 from backend.data.fetch_market_data import (
@@ -231,3 +232,63 @@ def test_relevant_memory_is_similarity_not_sql(ctx: ToolContext) -> None:
     assert out["count"] >= 1
     assert "prior" in out["guardrail"].lower()
     assert out["notes"][0]["content"].startswith("AAPL")
+
+
+def test_search_similar_breaks_is_parameterized_and_ranked(ctx: ToolContext) -> None:
+    assert ctx.store is not None
+    ctx.embed_fn = stub_embedding
+    ctx.store.memory = [
+        {
+            "memory_id": str(uuid4()),
+            "scope": "decision:1",
+            "memory_type": "incident",
+            "content": "Human approved price_break on AAPL desks=EQ-US root_cause=price_mismatch",
+            "embedding": stub_embedding(
+                "Human approved price_break on AAPL desks=EQ-US root_cause=price_mismatch"
+            ),
+            "facts": {
+                "break_type": "price_break",
+                "symbol": "AAPL",
+                "desks": ["EQ-US"],
+                "root_cause": "price_mismatch",
+                "suggested_action": "amend_price",
+                "outcome": "approved",
+                "notional_band": "<10k",
+                "pair_id": "PAIR-1",
+            },
+        },
+        {
+            "memory_id": str(uuid4()),
+            "scope": "decision:2",
+            "memory_type": "override_reason",
+            "content": "Human rejected quantity_break on MSFT",
+            "embedding": stub_embedding("Human rejected quantity_break on MSFT"),
+            "facts": {
+                "break_type": "quantity_break",
+                "symbol": "MSFT",
+                "root_cause": "quantity_mismatch",
+                "suggested_action": "amend_quantity",
+                "outcome": "rejected",
+            },
+        },
+    ]
+    out = search_similar_breaks(ctx, break_type="price_break", symbol="AAPL", limit=5)
+    assert out["count"] == 1
+    assert out["cases"][0]["root_cause"] == "price_mismatch"
+    assert out["cases"][0]["suggested_action"] == "amend_price"
+    assert out["cases"][0]["outcome"] == "approved"
+    assert "prior" in out["guardrail"].lower() or "hypothesis" in out["guardrail"].lower()
+
+    poisoned = dispatch_tool(
+        "search_similar_breaks",
+        {"break_type": "price_break", "sql": "SELECT * FROM agent_memory"},
+        ctx,
+    )
+    assert poisoned.get("error") == "Free-form SQL is not allowed"
+
+    bad = dispatch_tool(
+        "search_similar_breaks",
+        {"break_type": "price_break; DROP TABLE agent_memory"},
+        ctx,
+    )
+    assert "error" in bad

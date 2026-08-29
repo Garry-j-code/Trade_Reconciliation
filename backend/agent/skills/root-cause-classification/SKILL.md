@@ -33,8 +33,9 @@ description: Map evidence onto the pinned root_cause enum, with tie-breaking rul
 2. **Calendar over generic settlement.** Closed or early-close session →
    `calendar_timing` or `settlement_date_mismatch` (settlement if only T+ dates
    disagree; calendar if the trade date itself is a non-session).
-3. **Precedent is a hypothesis.** `get_similar_resolved_breaks` / memory may
-   suggest a cause; keep it only if this break's own evidence agrees.
+3. **Precedent is a hypothesis.** `search_similar_breaks` / `get_similar_resolved_breaks`
+   / `get_relevant_memory` may suggest a cause; keep it only if this break's own
+   evidence agrees. Copy `root_cause` and `suggested_action` from the pinned enums.
 4. **Do not upgrade confidence to pick a prettier enum.** If two causes remain
    plausible, pick the more specific one and lower confidence, or use
    `insufficient_evidence` and `escalate_to_ops`.

@@ -1,5 +1,5 @@
 import type { RuntimeConfig } from "./config";
-import { emailFromIdToken, type TokenSet } from "./session";
+import { emailFromIdToken, loadTokens, type TokenSet } from "./session";
 
 type CognitoAuthResult = {
   AccessToken?: string;
@@ -39,17 +39,23 @@ async function cognitoCall(
   return parsed;
 }
 
-function tokensFrom(result: CognitoAuthResult, fallbackRefresh = ""): TokenSet {
+function tokensFrom(
+  result: CognitoAuthResult,
+  fallbackRefresh = "",
+  signedInAs = "",
+): TokenSet {
   const idToken = result.IdToken ?? "";
   const accessToken = result.AccessToken ?? "";
   if (!idToken && !accessToken) {
     throw new Error("Sign-in did not return tokens");
   }
+  const fromToken = idToken ? emailFromIdToken(idToken) : "";
   return {
     accessToken,
     idToken,
     refreshToken: result.RefreshToken ?? fallbackRefresh,
-    email: idToken ? emailFromIdToken(idToken) : "",
+    email: fromToken || signedInAs,
+    signedInAs: signedInAs || fromToken,
   };
 }
 
@@ -72,7 +78,7 @@ export async function signIn(
   if (!response.AuthenticationResult) {
     throw new Error("Sign-in failed");
   }
-  return tokensFrom(response.AuthenticationResult);
+  return tokensFrom(response.AuthenticationResult, "", username.trim());
 }
 
 export async function refreshSession(cfg: RuntimeConfig, refreshToken: string): Promise<TokenSet> {
@@ -86,5 +92,54 @@ export async function refreshSession(cfg: RuntimeConfig, refreshToken: string): 
   if (!response.AuthenticationResult) {
     throw new Error("Session expired. Sign in again.");
   }
-  return tokensFrom(response.AuthenticationResult, refreshToken);
+  const previous = loadTokens();
+  return tokensFrom(
+    response.AuthenticationResult,
+    refreshToken,
+    previous?.signedInAs || previous?.email || "",
+  );
+}
+
+export const PASSWORD_POLICY = {
+  minLength: 12,
+  requireLowercase: true,
+  requireUppercase: true,
+  requireDigits: true,
+  requireSymbols: true,
+} as const;
+
+export function passwordPolicyHint(): string {
+  return "At least 12 characters, with uppercase, lowercase, a number, and a symbol.";
+}
+
+export function validateNewPassword(password: string): string | null {
+  if (password.length < PASSWORD_POLICY.minLength) {
+    return `Password must be at least ${PASSWORD_POLICY.minLength} characters.`;
+  }
+  if (!/[a-z]/.test(password)) {
+    return "Password must include a lowercase letter.";
+  }
+  if (!/[A-Z]/.test(password)) {
+    return "Password must include an uppercase letter.";
+  }
+  if (!/[0-9]/.test(password)) {
+    return "Password must include a number.";
+  }
+  if (!/[^A-Za-z0-9]/.test(password)) {
+    return "Password must include a symbol.";
+  }
+  return null;
+}
+
+export async function changePassword(
+  cfg: RuntimeConfig,
+  accessToken: string,
+  previousPassword: string,
+  proposedPassword: string,
+): Promise<void> {
+  await cognitoCall(cfg, "AWSCognitoIdentityProviderService.ChangePassword", {
+    AccessToken: accessToken,
+    PreviousPassword: previousPassword,
+    ProposedPassword: proposedPassword,
+  });
 }

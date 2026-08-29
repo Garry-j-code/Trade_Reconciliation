@@ -123,10 +123,14 @@ def investigate_break(
     tools_enabled: bool = True,
     skills_dir: Path | None = None,
     max_tool_calls: int = MAX_TOOL_CALLS,
+    extra_context: dict[str, Any] | None = None,
+    analyst_message: str | None = None,
 ) -> InvestigationResult:
     """Run the agent for one break. Does not persist."""
     system = build_system_prompt(skills_dir=skills_dir)
-    user = build_user_prompt(brk)
+    user = build_user_prompt(
+        brk, extra_context=extra_context, analyst_message=analyst_message
+    )
     messages: list[dict[str, Any]] = [
         {"role": "user", "content": [{"text": user}]}
     ]

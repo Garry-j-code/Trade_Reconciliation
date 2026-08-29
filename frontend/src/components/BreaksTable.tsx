@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import type { BreakListItem, BreakSortField, SortOrder } from "../api/types";
-import { formatDate, formatUsd, labelize, shortId } from "../lib/format";
+import { formatTradeTimestamp, formatUsd, labelize, shortId } from "../lib/format";
 
 const SORTABLE: { key: BreakSortField; label: string }[] = [
   { key: "break_type", label: "Type" },
@@ -61,13 +61,18 @@ export function BreaksTable({
               <td className="mono">
                 <Link to={`/breaks/${row.break_id}`}>{shortId(row.break_id)}</Link>
               </td>
-              <td>{labelize(row.break_type)}</td>
+              <td>{labelize(row.display_type || row.break_type)}</td>
               <td>
                 <span className={`pill ${row.status}`}>{row.status}</span>
+                {row.last_actor ? (
+                  <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
+                    {row.last_action ?? "decided"} · {row.last_actor}
+                  </div>
+                ) : null}
               </td>
               <td>{row.desk ?? "—"}</td>
               <td className="mono">{row.symbol ?? "—"}</td>
-              <td>{formatDate(row.trade_date)}</td>
+              <td>{formatTradeTimestamp(row.executed_at, row.trade_date)}</td>
               <td>{formatUsd(row.notional_at_risk)}</td>
             </tr>
           ))}

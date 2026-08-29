@@ -58,8 +58,17 @@ if [[ -n "$SCHEDULER_SECRET_ARN" ]]; then
   SCHEDULER_SECRET="$(aws secretsmanager get-secret-value --secret-id "$SCHEDULER_SECRET_ARN" --query SecretString --output text 2>/dev/null || true)"
 fi
 
+MASSIVE_KEY=""
+if MASSIVE_KEY="$(aws ssm get-parameter --name /trade-recon/massive-api-key --with-decryption --query Parameter.Value --output text 2>/dev/null)"; then
+  if [[ -z "$MASSIVE_KEY" || "$MASSIVE_KEY" == "None" ]]; then
+    MASSIVE_KEY=""
+  fi
+else
+  MASSIVE_KEY=""
+fi
+
 export ENV_FILE DB_URL CF_ORIGIN REGION MARKET_BUCKET
-export COGNITO_USER_POOL_ID COGNITO_CLIENT_ID COGNITO_REGION SCHEDULER_SECRET
+export COGNITO_USER_POOL_ID COGNITO_CLIENT_ID COGNITO_REGION SCHEDULER_SECRET MASSIVE_KEY
 "$PY" - <<'PY'
 import os
 from pathlib import Path
@@ -91,10 +100,13 @@ lines = [
 secret = os.environ.get("SCHEDULER_SECRET") or ""
 if secret and secret != "None":
     lines.append(f"RECON_SCHEDULER_SECRET={q(secret)}")
+massive = os.environ.get("MASSIVE_KEY") or ""
+if massive and massive != "None":
+    lines.append(f"MASSIVE_API_KEY={q(massive)}")
 env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 env_path.chmod(0o600)
 PY
-unset DB_URL SCHEDULER_SECRET
+unset DB_URL SCHEDULER_SECRET MASSIVE_KEY
 set -x
 
 install -m 644 "${APP_ROOT}/infra/ec2_api/trade-recon-api.service" /etc/systemd/system/trade-recon-api.service

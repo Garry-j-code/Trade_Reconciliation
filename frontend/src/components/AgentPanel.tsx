@@ -1,5 +1,5 @@
 import type { BreakDetailResponse } from "../api/types";
-import { confidencePct, labelize } from "../lib/format";
+import { confidencePct, evidenceDetail, evidenceHeading, labelize } from "../lib/format";
 
 function confidenceLevel(value: number | null | undefined): "low" | "mid" | "high" {
   if (value == null || Number.isNaN(value)) return "mid";
@@ -49,8 +49,9 @@ export function AgentPanel({ detail }: { detail: BreakDetailResponse }) {
 
       {!hasSuggestion ? (
         <p className="placeholder">
-          No investigation yet. Bedrock is optional — use Investigate to request a
-          suggestion, or approve/reject with a note without one.
+          No investigation yet. Open Investigate to chat with the agent. Approve
+          applies the suggested book fix; Reject disagrees without closing;
+          Override force-closes without changing the books.
         </p>
       ) : (
         <>
@@ -69,14 +70,19 @@ export function AgentPanel({ detail }: { detail: BreakDetailResponse }) {
           <div className="agent-field">
             <div className="k">Evidence</div>
             {evidence.length === 0 ? (
-              <p className="placeholder">No tool evidence attached.</p>
+              <p className="placeholder">No evidence attached.</p>
             ) : (
               <ul className="evidence">
                 {evidence.map((item, i) => (
                   <li key={i}>
-                    <div className="tool-name">{String(item.tool ?? "tool")}</div>
+                    <div className="tool-name">{evidenceHeading(item.tool)}</div>
                     <div className="tool-result">
-                      {String(item.result_summary ?? JSON.stringify(item))}
+                      {evidenceDetail(
+                        item.result_summary != null
+                          ? String(item.result_summary)
+                          : JSON.stringify(item),
+                        item.tool,
+                      )}
                     </div>
                   </li>
                 ))}

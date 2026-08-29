@@ -100,7 +100,8 @@ Pure functions over dataframes. No LLM, no network calls. Fully unit-testable �
 | `get_corporate_actions` | Cached splits/dividends (S3) | Quantity/price break — checking for a real split/dividend |
 | `get_market_session_info` | Cached trading calendar | Break near a holiday, early close, or timing issue |
 | `get_trade_history` | `normalized_trades` | Checking for a pattern on this symbol/desk |
-| `get_similar_resolved_breaks` | `breaks` + `resolution_suggestions` + `audit_log` | Checking for an exact precedent |
+| `get_similar_resolved_breaks` | `breaks` + `resolution_suggestions` + `audit_log` | Checking for an exact-type precedent |
+| `search_similar_breaks` | `agent_memory` (HITL decision rows, pgvector) | Top-k similar Approve/Reject cases |
 | `get_desk_metadata` | Desk reference table | Context on whether this desk is normally clean |
 | `get_raw_records` | `raw_broker_trades` + `raw_desk_trades` | Wants the untouched originals, not just the diff |
 | `get_relevant_memory` | `agent_memory` (pgvector similarity) | Checking for a synthesized pattern, not an exact case |
@@ -139,26 +140,31 @@ Enums, not free text, for `root_cause` and `suggested_action` — otherwise dash
 
 ### 6.4 Memory — automatic, two-layer
 
-- **Deterministic rollups:** plain SQL aggregates (break frequency by desk/symbol/root_cause, override rate by root cause). Cheap, zero hallucination risk.
-- **Semantic notes:** short LLM-written summaries of what happened and what it meant, embedded via `pgvector` on the existing RDS instance (no separate managed vector service — fewer moving parts).
+- **HITL decision rows (primary):** after a successful human **Approve**, **Reject**, or **Override**, upsert one `agent_memory` row keyed by `audit_id` (break type, desks, symbol, `root_cause`, `suggested_action`, outcome, actor note, notional band, `pair_id`). Embed with Titan (`amazon.titan-embed-text-v1`, 1536-d). If embedding fails, still store the row with a null vector so parameterized recall works. Never skip `audit_log`.
+- **Deterministic rollups (optional):** plain SQL aggregates (break frequency by desk/symbol/root_cause, override rate by root cause). Cheap, zero hallucination risk. Off on the nightly job by default.
+- **Semantic notes (opt-in):** short LLM-written summaries. **Not** the weekday 07:00 default — do not run a large nightly Converse job.
 
 ```sql
 CREATE TABLE agent_memory (
     memory_id UUID PRIMARY KEY,
-    scope TEXT,              -- 'desk:12', 'symbol:AAPL', 'global'
+    scope TEXT,              -- 'decision:<audit_id>' for HITL rows; also 'desk:12', 'symbol:AAPL', 'global'
     memory_type TEXT,        -- 'pattern', 'incident', 'override_reason'
     content TEXT,
     embedding VECTOR(1536),
     source_break_ids UUID[],
+    audit_id UUID UNIQUE,    -- HITL idempotency
+    facts JSONB,             -- structured fields for parameterized retrieve
     created_at TIMESTAMPTZ
 );
 ```
 
-**Automatic update loop:** a scheduled Lambda (EventBridge, decoupled from the main Step Functions pipeline) runs on a cadence — daily is reasonable — pulls everything resolved/overridden since the last run, calls Bedrock with a `memory-writer` skill, writes new notes. Loop closes: resolved breaks → memory writer → agent_memory → next investigation retrieves it → produces new resolved breaks.
+**Write vs read:** write on human decision (and a cheap 07:00 backfill for any audit missing a row). Read on Investigate via `search_similar_breaks` / `get_relevant_memory` (counts toward the 5-tool cap).
 
-**Guardrail:** memory is a prior, not a verdict. The agent must treat a retrieved note as a hypothesis to check against this break's actual evidence, not a shortcut.
+**Nightly job:** EventBridge 07:00 UTC → SSM `write-agent-memory`. Default: Titan-embed missing HITL rows, **skip if caught up**, no Converse. Approve-time write keeps this cheap.
 
-**Retention:** granular notes older than 90 days get compacted into a monthly summary, so retrieval doesn't get noisier as history grows.
+**Guardrail:** memory is a prior, not a verdict. The agent must treat a retrieved note as a hypothesis to check against this break's actual evidence, not a shortcut. Bias `root_cause` / `suggested_action` toward pinned enums only.
+
+**Retention:** granular *non-HITL* notes older than 90 days get compacted into a monthly summary. Decision rows (`audit_id` set) are kept.
 
 ### 6.5 Human-in-the-loop guardrails
 
@@ -257,7 +263,7 @@ trade-recon/
 - [x] 6. Agent — JSON-only output first, then tools one at a time, then skills, then memory
 - [x] 7. React dashboard (local Vite; CloudFront in step 8)
 - [x] 8. **CDK (Python)** — CloudFront+S3 frontend; FastAPI on t4g.micro in the RDS VPC (`TradeReconEc2Api`); no NAT; RDS not `0.0.0.0/0`. See `infra/README.md`.
-- [x] 9. **Product hardening** — Cognito email/password (custom React login); JWT on `/api/*`; `/health` public; CloudFront prefix-list lock on EC2:80; weekday EventBridge → Step Functions → `POST /api/recon/run`; daily stub memory writer via SSM; handover docs.
+- [x] 9. **Product hardening** — Cognito; CloudFront lock; weekday EventBridge **21:30 UTC** SSM `daily-blotter`; HITL + nightly Titan memory backfill (skip if caught up); 30-day sunset pause (stop EC2+RDS, no S3/RDS destroy).
 
 Check items off as they land. If a coding agent is working from this file, it should update this section when it completes a step.
 
@@ -269,7 +275,7 @@ Things not yet pinned down — flag here rather than let a coding agent guess si
 
 - Terraform vs. CDK — **CDK (Python) chosen**; app lives in `infra/`. Reuses existing S3 market-data bucket and RDS `trade-recon-postgres` (does not create a second RDS). Hosted API is a public-subnet **t4g.micro** (IGW for Bedrock/S3; RDS over private IP). **No NAT Gateway.** EC2:80 is limited to the CloudFront origin-facing prefix list.
 - Auth — **Cognito user pool** (email/password, one seeded demo analyst). Custom login in the React app (not hosted UI). FastAPI verifies JWT on `/api/*`; `/health` stays public.
-- Orchestration — **standard Step Functions**, one Lambda task that POSTs `/api/recon/run` through CloudFront with a scheduler secret. EventBridge weekdays 13:00 UTC. Daily 07:00 UTC memory writer uses SSM Run Command with `--provider stub` (Bedrock cost cap).
+- Orchestration — weekday EventBridge **21:30 UTC** → SSM `daily-blotter` on EC2. Daily 07:00 UTC memory backfill (Titan embed for audits not written at Approve time; skip if caught up; no nightly Converse). Sunset watcher reads `/trade-recon/product-sunset-date` and **stops** EC2 + RDS (storage still bills; AWS auto-starts stopped RDS after 7 days). No NAT, no second RDS, market-data bucket not destroyed.
 - Exact symbol universe (30–50 tickers) — provisional starter set of 40 liquid US equities pinned in `backend/data/fetch_market_data.py` (`DEFAULT_SYMBOLS`); revisit before demo if needed
 - `root_cause` / `suggested_action` enums — **pinned** in `backend/agent/enums.py` (step 6):
   - `root_cause`: `missing_trade`, `quantity_mismatch`, `price_mismatch`, `duplicate_booking`, `settlement_date_mismatch`, `split_fill`, `corporate_action_timing`, `desk_booking_error`, `broker_reporting_lag`, `calendar_timing`, `data_quality`, `insufficient_evidence`

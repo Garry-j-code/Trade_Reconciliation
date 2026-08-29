@@ -7,10 +7,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { refreshSession, signIn } from "./cognito";
-import { loadRuntimeConfig, type RuntimeConfig } from "./config";
+import { changePassword as cognitoChangePassword, refreshSession, signIn } from "./cognito";
+import { ConfigError, loadRuntimeConfig, type RuntimeConfig } from "./config";
 import {
   clearTokens,
+  identityFromTokens,
   loadTokens,
   saveTokens,
   tokenExpired,
@@ -20,9 +21,13 @@ import {
 type AuthState = {
   ready: boolean;
   config: RuntimeConfig | null;
+  /** Set when the deployment itself is broken (see ConfigError); blocks boot. */
+  configError: string | null;
   tokens: TokenSet | null;
+  displayName: string;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
+  changePassword: (previousPassword: string, proposedPassword: string) => Promise<void>;
 };
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -30,12 +35,23 @@ const AuthContext = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [ready, setReady] = useState(false);
   const [config, setConfig] = useState<RuntimeConfig | null>(null);
+  const [configError, setConfigError] = useState<string | null>(null);
   const [tokens, setTokens] = useState<TokenSet | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const cfg = await loadRuntimeConfig();
+      let cfg: RuntimeConfig;
+      try {
+        cfg = await loadRuntimeConfig();
+      } catch (err) {
+        if (cancelled) return;
+        setConfigError(
+          err instanceof ConfigError ? err.message : "Could not load the app configuration.",
+        );
+        setReady(true);
+        return;
+      }
       if (cancelled) return;
       setConfig(cfg);
       if (cfg.authDisabled) {
@@ -82,9 +98,44 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setTokens(null);
   }, []);
 
+  const changeUserPassword = useCallback(
+    async (previousPassword: string, proposedPassword: string) => {
+      if (!config || config.authDisabled) {
+        throw new Error("Password changes are unavailable in local auth-disabled mode.");
+      }
+      let current = tokens;
+      if (!current) {
+        throw new Error("Sign in before changing your password.");
+      }
+      if (tokenExpired(current.accessToken) && current.refreshToken) {
+        current = await refreshSession(config, current.refreshToken);
+        saveTokens(current);
+        setTokens(current);
+      }
+      await cognitoChangePassword(
+        config,
+        current.accessToken,
+        previousPassword,
+        proposedPassword,
+      );
+    },
+    [config, tokens],
+  );
+
+  const displayName = tokens ? identityFromTokens(tokens) : "";
+
   const value = useMemo(
-    () => ({ ready, config, tokens, login, logout }),
-    [ready, config, tokens, login, logout],
+    () => ({
+      ready,
+      config,
+      configError,
+      tokens,
+      displayName,
+      login,
+      logout,
+      changePassword: changeUserPassword,
+    }),
+    [ready, config, configError, tokens, displayName, login, logout, changeUserPassword],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

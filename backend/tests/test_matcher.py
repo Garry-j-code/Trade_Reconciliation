@@ -195,6 +195,28 @@ def test_price_break_outside_tolerance() -> None:
     assert br["status"] == "open"
     assert parse_trade_ids(br["broker_trade_ids"]) == ["BRK-1"]
     assert parse_trade_ids(br["desk_trade_ids"]) == ["DSK-1"]
+    ts = "2024-06-03T14:32:01-04:00"
+    df = _frame(
+        [
+            _norm_row(
+                source="broker",
+                trade_id="BRK-1",
+                price=100.0,
+                pair_id="PAIR-PX",
+                executed_at=ts,
+            ),
+            _norm_row(
+                source="desk",
+                trade_id="DSK-1",
+                price=100.75,
+                pair_id="PAIR-PX",
+                executed_at=ts,
+            ),
+        ]
+    )
+    _matches, breaks = match_normalized_trades(df)
+    executed = pd.to_datetime(breaks.iloc[0]["executed_at"], utc=True)
+    assert executed.tzinfo is not None
 
 
 def test_quantity_break() -> None:
@@ -474,7 +496,8 @@ def test_prepare_frames_for_parquet() -> None:
     assert again.iloc[0]["break_id"] == first_id
     UUID(str(first_id))
     assert stable_break_id(breaks.iloc[0].to_dict()) == UUID(str(first_id))
-    assert "pair_id" in break_identity(breaks.iloc[0].to_dict())
+    assert "pair_id" in breaks.iloc[0].to_dict()
+    assert "|P|" in break_identity(breaks.iloc[0].to_dict())
 
 
 def test_load_frames_to_db_does_not_delete_audit_log() -> None:

@@ -34,7 +34,9 @@ from backend.agent.skills_loader import (
 def test_root_cause_enum_is_closed() -> None:
     assert "insufficient_evidence" in ROOT_CAUSE_VALUES
     assert "corporate_action_timing" in ROOT_CAUSE_VALUES
+    assert "other" in ROOT_CAUSE_VALUES
     parse_root_cause("price_mismatch")
+    parse_root_cause("other")
     with pytest.raises(ValueError, match="Unknown root_cause"):
         parse_root_cause("fat_finger")
 
@@ -73,9 +75,9 @@ def test_parse_agent_output_accepts_contract() -> None:
     assert dumped["evidence"][0]["tool"] == "get_corporate_actions"
 
 
-def test_parse_agent_output_rejects_unknown_enum() -> None:
-    with pytest.raises(ValidationError):
-        parse_agent_output(_valid_payload(root_cause="not_a_cause"))
+def test_parse_agent_output_maps_unknown_root_cause_to_other() -> None:
+    parsed = parse_agent_output(_valid_payload(root_cause="not_a_cause"))
+    assert parsed.root_cause == RootCause.OTHER
     with pytest.raises(ValidationError):
         parse_agent_output(_valid_payload(suggested_action="teleport"))
 

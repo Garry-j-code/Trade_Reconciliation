@@ -1,5 +1,5 @@
 import type { BreakDetailResponse, NormalizedTradeOut } from "../api/types";
-import { formatDate, formatPrice, formatQty } from "../lib/format";
+import { formatPrice, formatQty, formatTradeTimestamp } from "../lib/format";
 
 const FIELDS: { key: keyof NormalizedTradeOut; label: string }[] = [
   { key: "trade_id", label: "Trade ID" },
@@ -21,7 +21,12 @@ function display(trade: NormalizedTradeOut | undefined, key: keyof NormalizedTra
   if (value == null || value === "") return "—";
   if (key === "quantity" && typeof value === "number") return formatQty(value);
   if (key === "price" && typeof value === "number") return formatPrice(value);
-  if (key === "trade_date" || key === "settlement_date") return formatDate(String(value));
+  if (key === "trade_date") {
+    return formatTradeTimestamp(trade.executed_at, String(value));
+  }
+  if (key === "settlement_date") {
+    return formatTradeTimestamp(trade.settlement_datetime, String(value));
+  }
   return String(value);
 }
 
@@ -57,6 +62,7 @@ export function TradeDiff({ detail }: { detail: BreakDetailResponse }) {
         return (
           <div key={i} className="diff-leg">
             {rows > 1 && <div className="diff-leg-label">Leg {i + 1}</div>}
+            <div className="diff-scroll">
             <div className="diff-grid">
               <div className="head">Field</div>
               <div className="head">Broker</div>
@@ -76,6 +82,7 @@ export function TradeDiff({ detail }: { detail: BreakDetailResponse }) {
                   </div>
                 );
               })}
+            </div>
             </div>
           </div>
         );

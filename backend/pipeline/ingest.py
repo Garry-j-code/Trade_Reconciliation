@@ -43,6 +43,7 @@ from backend.pipeline.normalize import (
     normalize_both,
     prepare_normalized_for_parquet,
 )
+from backend.pipeline.rules import as_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,7 @@ def raw_broker_row_to_orm(row: Mapping[str, Any]) -> RawBrokerTrade:
         symbol=str(row["symbol"]),
         trade_date=_as_date(row["trade_date"]),
         settlement_date=_as_date(row["settlement_date"]),
+        settlement_datetime=as_datetime(row.get("settlement_datetime")),
         side=str(row["side"]),
         quantity=_as_float(row["quantity"]),
         price=_as_float(row["price"]),
@@ -169,6 +171,7 @@ def raw_broker_row_to_orm(row: Mapping[str, Any]) -> RawBrokerTrade:
         account_id=str(row["account_id"]),
         execution_venue=str(row["execution_venue"]),
         pair_id=str(row["pair_id"]) if pd.notna(row.get("pair_id")) else None,
+        executed_at=as_datetime(row.get("executed_at")),
     )
 
 
@@ -178,6 +181,7 @@ def raw_desk_row_to_orm(row: Mapping[str, Any]) -> RawDeskTrade:
         ticker=str(row["ticker"]),
         trade_date=_as_date(row["trade_date"]),
         settle_date=_as_date(row["settle_date"]),
+        settlement_datetime=as_datetime(row.get("settlement_datetime")),
         side=str(row["side"]),
         qty=_as_float(row["qty"]),
         px=_as_float(row["px"]),
@@ -185,6 +189,7 @@ def raw_desk_row_to_orm(row: Mapping[str, Any]) -> RawDeskTrade:
         desk_code=str(row["desk_code"]),
         trader=str(row["trader"]),
         pair_id=str(row["pair_id"]) if pd.notna(row.get("pair_id")) else None,
+        executed_at=as_datetime(row.get("executed_at")),
     )
 
 
@@ -200,6 +205,7 @@ def normalized_row_to_orm(row: Mapping[str, Any]) -> NormalizedTrade:
         symbol=str(row["symbol"]),
         trade_date=_as_date(row["trade_date"]),
         settlement_date=_as_date(row["settlement_date"]),
+        settlement_datetime=as_datetime(row.get("settlement_datetime")),
         side=str(row["side"]),
         quantity=_as_float(row["quantity"]),
         price=_as_float(row["price"]),
@@ -207,6 +213,7 @@ def normalized_row_to_orm(row: Mapping[str, Any]) -> NormalizedTrade:
         account=str(row["account"]),
         executing_party=str(row["executing_party"]),
         pair_id=str(row["pair_id"]) if pd.notna(row.get("pair_id")) else None,
+        executed_at=as_datetime(row.get("executed_at")),
         raw_payload=payload,
     )
 

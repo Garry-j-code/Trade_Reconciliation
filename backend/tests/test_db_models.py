@@ -32,7 +32,7 @@ def test_all_section4_tables_registered() -> None:
 
 def test_normalized_trade_has_source_and_pair_id() -> None:
     cols = {c.name for c in NormalizedTrade.__table__.columns}
-    assert {"trade_id", "source", "pair_id", "account", "executing_party"} <= cols
+    assert {"trade_id", "source", "pair_id", "account", "executing_party", "executed_at"} <= cols
 
 
 def test_raw_legs_preserve_generator_column_names() -> None:
@@ -43,6 +43,11 @@ def test_raw_legs_preserve_generator_column_names() -> None:
     assert "blotter_id" in desk_cols
     assert "settle_date" in desk_cols
     assert "qty" in desk_cols
+
+
+def test_agent_memory_has_hitl_columns() -> None:
+    cols = {c.name for c in AgentMemory.__table__.columns}
+    assert {"audit_id", "facts", "embedding", "source_break_ids"} <= cols
 
 
 def test_resolution_suggestion_has_inferred_flag() -> None:

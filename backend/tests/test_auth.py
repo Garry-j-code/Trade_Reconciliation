@@ -37,6 +37,18 @@ def test_health_public_when_auth_on(auth_client: TestClient) -> None:
     assert response.json()["status"] == "ok"
 
 
+def test_health_reports_auth_required(auth_client: TestClient) -> None:
+    """The console reads this to detect a site published without config.json."""
+    assert auth_client.get("/health").json()["auth"] == "required"
+
+
+def test_health_reports_auth_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COGNITO_USER_POOL_ID", raising=False)
+    monkeypatch.delenv("AUTH_DISABLED", raising=False)
+    with TestClient(create_app()) as client:
+        assert client.get("/health").json()["auth"] == "disabled"
+
+
 def test_summary_unauthenticated_is_401(auth_client: TestClient) -> None:
     response = auth_client.get("/api/summary")
     assert response.status_code == 401
@@ -64,7 +76,7 @@ def test_summary_with_jwt_reaches_handler(auth_app, monkeypatch: pytest.MonkeyPa
     auth_app.dependency_overrides[get_db] = _db
     monkeypatch.setattr(
         "backend.api.crud.summary_stats",
-        lambda _s: {
+        lambda _s, **_k: {
             "total_trades": 1,
             "match_count": 1,
             "break_count": 0,
@@ -90,7 +102,7 @@ def test_scheduler_secret_allows_recon_not_summary(
     auth_app, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "backend.api.routes.recon.run_recon_capped",
+        "backend.api.routes.recon.run_rematch_from_db_capped",
         lambda **_k: MagicMock(
             broker_rows=1,
             desk_rows=1,

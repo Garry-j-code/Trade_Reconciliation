@@ -11,6 +11,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
@@ -303,6 +304,30 @@ def provider_from_env(
     if chosen in {"bedrock", "live"}:
         return BedrockProvider()
     raise ValueError(f"Unknown AGENT_LLM_PROVIDER {chosen!r} (use stub or bedrock)")
+
+
+def pad_embedding(vector: list[float], dim: int = EMBEDDING_DIM) -> list[float]:
+    """Trim or zero-pad to ``agent_memory.embedding`` width (1536)."""
+    if len(vector) < dim:
+        return list(vector) + [0.0] * (dim - len(vector))
+    return list(vector[:dim])
+
+
+def try_embed(
+    embed_fn: Callable[[str], list[float]],
+    text: str,
+    *,
+    dim: int = EMBEDDING_DIM,
+) -> list[float] | None:
+    """Return a padded vector, or ``None`` if the embedder fails (log and continue)."""
+    try:
+        vector = embed_fn(str(text or ""))
+        if not isinstance(vector, list) or not vector:
+            raise ValueError("embedder returned an empty vector")
+        return pad_embedding([float(x) for x in vector], dim=dim)
+    except Exception as exc:  # noqa: BLE001 — Titan outage must not drop the row
+        logger.exception("Embedding failed; storing memory without a vector: %s", exc)
+        return None
 
 
 def stub_embedding(text: str, dim: int = EMBEDDING_DIM) -> list[float]:

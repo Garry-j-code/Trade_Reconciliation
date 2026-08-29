@@ -57,6 +57,9 @@ class RawBrokerTrade(Base):
     symbol: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     settlement_date: Mapped[date] = mapped_column(Date, nullable=False)
+    settlement_datetime: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     side: Mapped[str] = mapped_column(String(8), nullable=False)
     quantity: Mapped[float] = mapped_column(Float, nullable=False)
     price: Mapped[float] = mapped_column(Float, nullable=False)
@@ -64,6 +67,9 @@ class RawBrokerTrade(Base):
     account_id: Mapped[str] = mapped_column(String(64), nullable=False)
     execution_venue: Mapped[str] = mapped_column(String(32), nullable=False)
     pair_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    executed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -81,6 +87,9 @@ class RawDeskTrade(Base):
     ticker: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     trade_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
     settle_date: Mapped[date] = mapped_column(Date, nullable=False)
+    settlement_datetime: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     side: Mapped[str] = mapped_column(String(8), nullable=False)
     qty: Mapped[float] = mapped_column(Float, nullable=False)
     px: Mapped[float] = mapped_column(Float, nullable=False)
@@ -88,6 +97,9 @@ class RawDeskTrade(Base):
     desk_code: Mapped[str] = mapped_column(String(64), nullable=False)
     trader: Mapped[str] = mapped_column(String(64), nullable=False)
     pair_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    executed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -127,6 +139,9 @@ class NormalizedTrade(Base):
     symbol: Mapped[str] = mapped_column(String(32), nullable=False)
     trade_date: Mapped[date] = mapped_column(Date, nullable=False)
     settlement_date: Mapped[date] = mapped_column(Date, nullable=False)
+    settlement_datetime: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     side: Mapped[str] = mapped_column(String(8), nullable=False)
     quantity: Mapped[float] = mapped_column(Float, nullable=False)
     price: Mapped[float] = mapped_column(Float, nullable=False)
@@ -134,6 +149,9 @@ class NormalizedTrade(Base):
     account: Mapped[str] = mapped_column(String(64), nullable=False)
     executing_party: Mapped[str] = mapped_column(String(64), nullable=False)
     pair_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    executed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     raw_payload: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -181,6 +199,9 @@ class Break(Base):
     desk_trade_ids: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     symbol: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
     trade_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    executed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     detail: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     cluster_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), nullable=True, index=True
@@ -268,6 +289,13 @@ class AgentMemory(Base):
     source_break_ids: Mapped[Optional[list[uuid.UUID]]] = mapped_column(
         ARRAY(UUID(as_uuid=True)), nullable=True
     )
+    audit_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("audit_log.audit_id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
+    )
+    facts: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

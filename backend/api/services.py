@@ -23,8 +23,10 @@ from backend.api.models import (
     REVIEW_ONE_CLICK,
     TERMINAL_BREAK_STATUSES,
 )
+from backend.agent.evidence_display import display_evidence_list
 from backend.api.schemas import (
     ApprovalResponse,
+    AuditDecisionOut,
     BreakDetailResponse,
     NormalizedTradeOut,
     SideBySide,
@@ -35,6 +37,12 @@ from backend.db.models import (
     RawBrokerTrade,
     RawDeskTrade,
     ResolutionSuggestion,
+)
+from backend.pipeline.book_fix import (
+    BookFixError,
+    NO_SUGGESTION_MESSAGE,
+    apply_suggested_action,
+    needs_suggestion_to_approve,
 )
 
 
@@ -61,6 +69,7 @@ def suggestion_out(break_id: UUID, row: ResolutionSuggestion | None) -> Suggesti
     if row is None:
         return SuggestionOut(break_id=break_id, evidence=[])
     evidence = row.evidence if isinstance(row.evidence, list) else []
+    evidence = display_evidence_list(evidence)
     return SuggestionOut(
         break_id=break_id,
         root_cause=row.root_cause,
@@ -78,8 +87,12 @@ def _raw_broker_dict(row: RawBrokerTrade) -> dict[str, Any]:
         "broker_trade_id": row.broker_trade_id,
         "symbol": row.symbol,
         "trade_date": row.trade_date.isoformat() if row.trade_date else None,
+        "executed_at": row.executed_at.isoformat() if row.executed_at else None,
         "settlement_date": row.settlement_date.isoformat()
         if row.settlement_date
+        else None,
+        "settlement_datetime": row.settlement_datetime.isoformat()
+        if row.settlement_datetime
         else None,
         "side": row.side,
         "quantity": row.quantity,
@@ -96,7 +109,11 @@ def _raw_desk_dict(row: RawDeskTrade) -> dict[str, Any]:
         "blotter_id": row.blotter_id,
         "ticker": row.ticker,
         "trade_date": row.trade_date.isoformat() if row.trade_date else None,
+        "executed_at": row.executed_at.isoformat() if row.executed_at else None,
         "settle_date": row.settle_date.isoformat() if row.settle_date else None,
+        "settlement_datetime": row.settlement_datetime.isoformat()
+        if row.settlement_datetime
+        else None,
         "side": row.side,
         "qty": row.qty,
         "px": row.px,
@@ -115,12 +132,17 @@ def build_break_detail(session: Session, row: Break) -> BreakDetailResponse:
     desk_raw = crud.get_raw_desk(session, desk_ids)
     suggestion = crud.latest_suggestion(session, row.break_id)
     item = crud.break_to_list_item(row)
+    decisions = [
+        AuditDecisionOut.model_validate(crud.audit_to_decision(a))
+        for a in crud.list_audits_for_break(session, row.break_id)
+    ]
     return BreakDetailResponse(
         break_id=row.break_id,
         break_type=row.break_type,
         status=row.status,
         symbol=row.symbol,
         trade_date=row.trade_date,
+        executed_at=item.get("executed_at"),
         pair_id=row.pair_id,
         desk=item["desk"],
         notional_at_risk=item["notional_at_risk"],
@@ -139,7 +161,63 @@ def build_break_detail(session: Session, row: Break) -> BreakDetailResponse:
         ),
         suggestion=suggestion_out(row.break_id, suggestion),
         review_routing=review_routing(suggestion, item["notional_at_risk"]),
+        decisions=decisions,
     )
+
+
+def assemble_investigate_context(session: Session, row: Break) -> dict[str, Any]:
+    """Payload the LLM sees in addition to any analyst chat note.
+
+    Never used by the deterministic matcher. Trade lookups are best-effort so
+    unit tests without a full ORM session still attach break fields.
+    """
+    from backend.agent.prompt import break_to_payload
+
+    item = crud.break_to_list_item(row)
+    executed = item.get("executed_at")
+    context: dict[str, Any] = {
+        "break": break_to_payload(row),
+        "desk": item.get("desk"),
+        "notional_at_risk": item.get("notional_at_risk"),
+        "executed_at": executed.isoformat() if executed is not None else None,
+        "status": row.status,
+    }
+    try:
+        suggestion = crud.latest_suggestion(session, row.break_id)
+        if suggestion is not None:
+            context["existing_suggestion"] = suggestion_out(
+                row.break_id, suggestion
+            ).model_dump(mode="json")
+        else:
+            context["existing_suggestion"] = None
+    except Exception:  # noqa: BLE001 — still investigate from pipeline fields
+        context["existing_suggestion"] = None
+
+    try:
+        broker_ids, desk_ids = crud.trade_ids_for_break(row)
+        broker_norm = crud.get_normalized_by_ids(session, "broker", broker_ids)
+        desk_norm = crud.get_normalized_by_ids(session, "desk", desk_ids)
+        broker_raw = crud.get_raw_broker(session, broker_ids)
+        desk_raw = crud.get_raw_desk(session, desk_ids)
+        context["trades"] = {
+            "broker_trade_ids": broker_ids,
+            "desk_trade_ids": desk_ids,
+            "broker_normalized": [
+                NormalizedTradeOut.model_validate(t).model_dump(mode="json")
+                for t in broker_norm
+            ],
+            "desk_normalized": [
+                NormalizedTradeOut.model_validate(t).model_dump(mode="json")
+                for t in desk_norm
+            ],
+            "broker_raw": [_raw_broker_dict(t) for t in broker_raw],
+            "desk_raw": [_raw_desk_dict(t) for t in desk_raw],
+        }
+    except Exception:  # noqa: BLE001
+        context["trades"] = {
+            "note": "Trade legs were not loaded; use pipeline detail and tools."
+        }
+    return context
 
 
 def _require_break(session: Session, break_id: UUID) -> Break:
@@ -157,6 +235,21 @@ def _require_open_for_decision(row: Break) -> None:
         )
 
 
+def _write_decision_memory(
+    session: Session,
+    *,
+    brk: Break,
+    audit: Any,
+    suggestion: ResolutionSuggestion | None,
+) -> None:
+    """HITL learning signal. Never skips audit_log; never fails the decision."""
+    from backend.agent.memory_writer import record_human_decision_memory
+
+    record_human_decision_memory(
+        session, brk=brk, audit=audit, suggestion=suggestion
+    )
+
+
 def approve_break(
     session: Session,
     break_id: UUID,
@@ -164,10 +257,18 @@ def approve_break(
     actor: str,
     note: str | None = None,
 ) -> ApprovalResponse:
-    """Human approve. Works with or without a suggestion row. Always audits."""
+    """Human approve: apply suggested_action to the books, then resolve + audit."""
     row = _require_break(session, break_id)
     _require_open_for_decision(row)
     suggestion = crud.latest_suggestion(session, break_id)
+    if needs_suggestion_to_approve(row.break_type) and suggestion is None:
+        raise HTTPException(status_code=400, detail=NO_SUGGESTION_MESSAGE)
+    if suggestion is not None:
+        try:
+            apply_suggested_action(session, row, suggestion)
+        except BookFixError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        row = _require_break(session, break_id)
     audit = crud.add_audit(
         session,
         break_id=break_id,
@@ -178,6 +279,7 @@ def approve_break(
     )
     row.status = BREAK_STATUS_RESOLVED
     session.flush()
+    _write_decision_memory(session, brk=row, audit=audit, suggestion=suggestion)
     return ApprovalResponse(
         break_id=row.break_id,
         status=row.status,
@@ -194,7 +296,7 @@ def reject_break(
     actor: str,
     note: str,
 ) -> ApprovalResponse:
-    """Reject the suggestion (or record a reject with no suggestion). Break stays open."""
+    """Reject the suggestion (or record a reject with no suggestion). Does not mutate trades."""
     row = _require_break(session, break_id)
     _require_open_for_decision(row)
     if not note or not note.strip():
@@ -210,6 +312,7 @@ def reject_break(
     )
     row.status = BREAK_STATUS_REJECTED
     session.flush()
+    _write_decision_memory(session, brk=row, audit=audit, suggestion=suggestion)
     return ApprovalResponse(
         break_id=row.break_id,
         status=row.status,
@@ -242,6 +345,7 @@ def override_break(
     )
     row.status = BREAK_STATUS_OVERRIDDEN
     session.flush()
+    _write_decision_memory(session, brk=row, audit=audit, suggestion=suggestion)
     return ApprovalResponse(
         break_id=row.break_id,
         status=row.status,

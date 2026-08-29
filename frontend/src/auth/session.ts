@@ -2,12 +2,17 @@ const ACCESS = "tr.accessToken";
 const ID = "tr.idToken";
 const REFRESH = "tr.refreshToken";
 const EMAIL = "tr.email";
+const SIGNED_IN_AS = "tr.signedInAs";
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type TokenSet = {
   accessToken: string;
   idToken: string;
   refreshToken: string;
   email: string;
+  signedInAs: string;
 };
 
 function read(key: string): string | null {
@@ -22,13 +27,30 @@ function write(key: string, value: string): void {
   sessionStorage.setItem(key, value);
 }
 
+export function isOpaqueUserId(value: string): boolean {
+  const trimmed = value.trim();
+  return !trimmed || UUID_RE.test(trimmed);
+}
+
+export function pickDisplayIdentity(
+  ...candidates: (string | null | undefined)[]
+): string {
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && !isOpaqueUserId(candidate)) {
+      return candidate.trim();
+    }
+  }
+  return "";
+}
+
 export function loadTokens(): TokenSet | null {
   const accessToken = read(ACCESS);
   const idToken = read(ID);
   const refreshToken = read(REFRESH);
   const email = read(EMAIL) ?? "";
+  const signedInAs = read(SIGNED_IN_AS) ?? "";
   if (!accessToken || !idToken) return null;
-  return { accessToken, idToken, refreshToken: refreshToken ?? "", email };
+  return { accessToken, idToken, refreshToken: refreshToken ?? "", email, signedInAs };
 }
 
 export function saveTokens(tokens: TokenSet): void {
@@ -36,6 +58,7 @@ export function saveTokens(tokens: TokenSet): void {
   write(ID, tokens.idToken);
   write(REFRESH, tokens.refreshToken);
   write(EMAIL, tokens.email);
+  write(SIGNED_IN_AS, tokens.signedInAs);
 }
 
 export function clearTokens(): void {
@@ -44,6 +67,7 @@ export function clearTokens(): void {
     sessionStorage.removeItem(ID);
     sessionStorage.removeItem(REFRESH);
     sessionStorage.removeItem(EMAIL);
+    sessionStorage.removeItem(SIGNED_IN_AS);
   } catch {
     /* ignore */
   }
@@ -73,11 +97,32 @@ export function tokenExpired(token: string, skewSeconds = 60): boolean {
   return Date.now() / 1000 >= exp - skewSeconds;
 }
 
+function claimString(payload: Record<string, unknown> | null, key: string): string {
+  if (!payload) return "";
+  const value = payload[key];
+  return typeof value === "string" ? value : "";
+}
+
 export function emailFromIdToken(idToken: string): string {
   const payload = decodeJwtPayload(idToken);
-  if (payload && typeof payload.email === "string") return payload.email;
-  if (payload && typeof payload["cognito:username"] === "string") {
-    return payload["cognito:username"];
-  }
-  return "";
+  return pickDisplayIdentity(
+    claimString(payload, "email"),
+    claimString(payload, "preferred_username"),
+    claimString(payload, "cognito:username"),
+  );
+}
+
+export function identityFromTokens(tokens: TokenSet): string {
+  const idPayload = decodeJwtPayload(tokens.idToken);
+  const accessPayload = decodeJwtPayload(tokens.accessToken);
+  return (
+    pickDisplayIdentity(
+      tokens.email,
+      tokens.signedInAs,
+      claimString(idPayload, "email"),
+      claimString(idPayload, "preferred_username"),
+      claimString(idPayload, "cognito:username"),
+      claimString(accessPayload, "username"),
+    ) || "Signed in"
+  );
 }

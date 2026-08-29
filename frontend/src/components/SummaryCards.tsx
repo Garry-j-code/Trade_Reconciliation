@@ -7,15 +7,11 @@ export function SummaryCards({ summary }: { summary: SummaryResponse }) {
   const matchedPairs = summary.matched_pair_count ?? summary.match_count;
   const brokerLegs = summary.broker_leg_count;
   const deskLegs = summary.desk_leg_count;
-  const matchRows = summary.match_row_count;
   const legLine =
     brokerLegs != null && deskLegs != null
       ? `${formatNumber(brokerLegs)} broker / ${formatNumber(deskLegs)} desk legs`
       : `${formatNumber(matchedPairs)} matched pairs`;
-  const matchLine =
-    matchRows != null && matchRows !== matchedPairs
-      ? `${formatNumber(matchedPairs)} pairs · ${formatNumber(matchRows)} match rows`
-      : `${formatNumber(matchedPairs)} matched pairs`;
+  const matchLine = `${formatNumber(matchedPairs)} pairs`;
 
   return (
     <div className="cards">
@@ -34,7 +30,9 @@ export function SummaryCards({ summary }: { summary: SummaryResponse }) {
       <div className="card tone-warn">
         <div className="label">Open breaks</div>
         <div className="value">{formatNumber(open)}</div>
-        <div className="sub">{(summary.breaks_by_type ?? []).length} types</div>
+        <div className="sub">
+          {(summary.break_type_options ?? summary.breaks_by_type ?? []).length} types
+        </div>
       </div>
       <div className="card tone-accent">
         <div className="label">Notional at risk</div>

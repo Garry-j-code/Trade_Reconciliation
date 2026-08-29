@@ -17,7 +17,7 @@ from typing import Any
 from uuid import UUID
 
 from dotenv import load_dotenv
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from backend.agent.cache import cache_dir_from_env, s3_cache_settings
@@ -33,8 +33,8 @@ from backend.agent.runner import (
     investigate_clusters,
     persist_investigation,
 )
-from backend.agent.tools import ToolContext
-from backend.db.models import Break
+from backend.agent.tools import ToolContext, attach_embedder
+from backend.db.models import Break, ResolutionSuggestion
 from backend.db.session import (
     database_url_from_env,
     get_engine,
@@ -56,13 +56,22 @@ def _tool_context(session: Session) -> ToolContext:
     )
 
 
-def _load_breaks(session: Session, *, break_id: UUID | None, limit: int | None) -> list[Break]:
+def _load_breaks(
+    session: Session,
+    *,
+    break_id: UUID | None,
+    limit: int | None,
+    missing_only: bool,
+) -> list[Break]:
     if break_id is not None:
         row = session.get(Break, break_id)
         if row is None:
             raise SystemExit(f"break not found: {break_id}")
         return [row]
     stmt = select(Break).where(Break.status == "open").order_by(Break.created_at.asc())
+    if missing_only:
+        has_suggestion = exists().where(ResolutionSuggestion.break_id == Break.break_id)
+        stmt = stmt.where(~has_suggestion)
     if limit is not None:
         stmt = stmt.limit(limit)
     return list(session.scalars(stmt).all())
@@ -86,8 +95,11 @@ def run_investigate(
     provider_name: str,
     cluster: bool,
     tools_enabled: bool,
+    missing_only: bool = True,
 ) -> list[dict[str, Any]]:
-    breaks = _load_breaks(session, break_id=break_id, limit=limit)
+    breaks = _load_breaks(
+        session, break_id=break_id, limit=limit, missing_only=missing_only
+    )
     if not breaks:
         return []
     ctx = _tool_context(session)
@@ -95,6 +107,7 @@ def run_investigate(
         provider = provider_from_env(provider_name)
     except BedrockAccessError:
         raise
+    attach_embedder(ctx, provider)
     if isinstance(provider, StubProvider) and not provider.default_text and not provider.script:
         provider = StubProvider(default_factory=lambda **_: default_stub_output(breaks[0]))
 
@@ -126,6 +139,11 @@ def main(argv: list[str] | None = None) -> int:
         help="stub | bedrock (default: AGENT_LLM_PROVIDER or bedrock)",
     )
     parser.add_argument("--no-cluster", action="store_true")
+    parser.add_argument(
+        "--reinvestigate",
+        action="store_true",
+        help="Include open breaks that already have a suggestion (default: missing only).",
+    )
     parser.add_argument("--json-only", action="store_true", help="Disable tools")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
@@ -147,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
                 provider_name=args.provider or "bedrock",
                 cluster=not args.no_cluster,
                 tools_enabled=not args.json_only,
+                missing_only=not args.reinvestigate,
             )
     except BedrockAccessError as exc:
         print(str(exc), file=sys.stderr)

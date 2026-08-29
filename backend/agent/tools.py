@@ -19,7 +19,14 @@ from sqlalchemy.orm import Session
 
 from backend.agent.cache import load_calendar, load_dividends, load_splits
 from backend.agent.desks import get_desk, list_desks
-from backend.agent.providers import EMBEDDING_DIM, stub_embedding
+from backend.agent.providers import (
+    LLMProvider,
+    StubProvider,
+    embedder_from_env,
+    pad_embedding,
+    stub_embedding,
+    try_embed,
+)
 from backend.db.models import (
     AgentMemory,
     AuditLog,
@@ -43,6 +50,7 @@ TOOL_NAMES: tuple[str, ...] = (
     "get_market_session_info",
     "get_trade_history",
     "get_similar_resolved_breaks",
+    "search_similar_breaks",
     "get_desk_metadata",
     "get_raw_records",
     "get_relevant_memory",
@@ -75,6 +83,17 @@ class ToolContext:
     s3_client: Any | None = None
     embed_fn: Callable[[str], list[float]] | None = None
     max_rows: int = MAX_TOOL_ROWS
+
+
+def attach_embedder(ctx: ToolContext, provider: LLMProvider | None = None) -> ToolContext:
+    """Titan on live investigate; stub vectors when the LLM provider is stub."""
+    if ctx.embed_fn is not None:
+        return ctx
+    if isinstance(provider, StubProvider):
+        ctx.embed_fn = stub_embedding
+        return ctx
+    ctx.embed_fn = embedder_from_env().embed
+    return ctx
 
 
 def _clamp_limit(limit: Any, default: int = 20) -> int:
@@ -485,6 +504,72 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
+def _memory_query_vector(ctx: ToolContext, text: str) -> list[float] | None:
+    embed = ctx.embed_fn or stub_embedding
+    return try_embed(embed, text) or pad_embedding(stub_embedding(text))
+
+
+def _facts_match(
+    facts: dict[str, Any] | None,
+    *,
+    break_type: str | None,
+    symbol: str | None,
+    desk: str | None,
+) -> bool:
+    if not facts:
+        return True
+    stored_type = str(facts.get("break_type") or "")
+    if break_type and stored_type and stored_type != break_type:
+        return False
+    if symbol:
+        stored = str(facts.get("symbol") or "").upper()
+        if stored and stored != symbol.upper():
+            return False
+    if desk:
+        desks = facts.get("desks") or []
+        names = {str(d).upper() for d in desks}
+        if names and desk.upper() not in names:
+            return False
+    return True
+
+
+def _note_from_memory_raw(raw: dict[str, Any], score: float | None = None) -> dict[str, Any]:
+    facts = raw.get("facts") if isinstance(raw.get("facts"), dict) else {}
+    note: dict[str, Any] = {
+        "memory_id": _jsonable(raw.get("memory_id")),
+        "scope": raw.get("scope"),
+        "memory_type": raw.get("memory_type"),
+        "content": raw.get("content"),
+        "break_type": facts.get("break_type"),
+        "symbol": facts.get("symbol"),
+        "desks": facts.get("desks"),
+        "root_cause": facts.get("root_cause"),
+        "suggested_action": facts.get("suggested_action"),
+        "outcome": facts.get("outcome"),
+        "actor_note": facts.get("actor_note"),
+        "notional_band": facts.get("notional_band"),
+        "pair_id": facts.get("pair_id"),
+        "guardrail": "Hypothesis only — confirm against this break's evidence.",
+    }
+    if score is not None:
+        note["score"] = round(score, 4)
+    return note
+
+
+def _note_from_orm(row: AgentMemory, score: float | None = None) -> dict[str, Any]:
+    facts = row.facts if isinstance(row.facts, dict) else {}
+    return _note_from_memory_raw(
+        {
+            "memory_id": row.memory_id,
+            "scope": row.scope,
+            "memory_type": row.memory_type,
+            "content": row.content,
+            "facts": facts,
+        },
+        score=score,
+    )
+
+
 def get_relevant_memory(
     ctx: ToolContext,
     *,
@@ -503,12 +588,7 @@ def get_relevant_memory(
     if scope:
         scope_key = _optional_token(scope, field="scope")
     cap = _clamp_limit(limit, default=5)
-    embed = ctx.embed_fn or stub_embedding
-    query_vec = embed(text)
-    if len(query_vec) < EMBEDDING_DIM:
-        query_vec = query_vec + [0.0] * (EMBEDDING_DIM - len(query_vec))
-    else:
-        query_vec = query_vec[:EMBEDDING_DIM]
+    query_vec = _memory_query_vector(ctx, text)
 
     if ctx.session is None:
         store = ctx.store or InMemoryStore()
@@ -518,19 +598,10 @@ def get_relevant_memory(
                 continue
             vec = raw.get("embedding")
             if not isinstance(vec, list):
-                vec = embed(str(raw.get("content") or ""))
+                vec = (ctx.embed_fn or stub_embedding)(str(raw.get("content") or ""))
             scored.append((_cosine(query_vec, [float(x) for x in vec]), raw))
         scored.sort(key=lambda t: t[0], reverse=True)
-        notes = [
-            {
-                "memory_id": _jsonable(raw.get("memory_id")),
-                "scope": raw.get("scope"),
-                "memory_type": raw.get("memory_type"),
-                "content": raw.get("content"),
-                "score": round(score, 4),
-            }
-            for score, raw in scored[:cap]
-        ]
+        notes = [_note_from_memory_raw(raw, score) for score, raw in scored[:cap]]
         return {
             "count": len(notes),
             "notes": notes,
@@ -551,19 +622,91 @@ def get_relevant_memory(
         stmt = stmt.order_by(AgentMemory.created_at.desc()).limit(cap)
         rows = list(ctx.session.scalars(stmt).all())
 
-    notes = [
-        {
-            "memory_id": str(row.memory_id),
-            "scope": row.scope,
-            "memory_type": row.memory_type,
-            "content": row.content,
-        }
-        for row in rows
-    ]
+    notes = [_note_from_orm(row) for row in rows]
     return {
         "count": len(notes),
         "notes": notes,
         "guardrail": "Memory is a prior, not a verdict — confirm against this break.",
+    }
+
+
+def search_similar_breaks(
+    ctx: ToolContext,
+    *,
+    break_type: str,
+    symbol: str | None = None,
+    desk: str | None = None,
+    query_text: str | None = None,
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Top-k similar human-resolved cases from ``agent_memory`` (parameterized)."""
+    btype = _require_token(break_type, field="break_type")
+    ticker = _optional_token(symbol, field="symbol")
+    if ticker:
+        ticker = ticker.upper()
+    desk_code = _optional_token(desk, field="desk")
+    if desk_code:
+        desk_code = desk_code.upper()
+    cap = _clamp_limit(limit, default=5)
+    text = str(query_text or "").strip()
+    if len(text) > 2000:
+        text = text[:2000]
+    if not text:
+        text = " ".join(p for p in (btype, ticker or "", desk_code or "") if p)
+    query_vec = _memory_query_vector(ctx, text)
+
+    if ctx.session is None:
+        store = ctx.store or InMemoryStore()
+        scored: list[tuple[float, dict[str, Any]]] = []
+        for raw in store.memory:
+            facts = raw.get("facts") if isinstance(raw.get("facts"), dict) else None
+            if not _facts_match(facts, break_type=btype, symbol=ticker, desk=desk_code):
+                continue
+            vec = raw.get("embedding")
+            if not isinstance(vec, list):
+                content = str(raw.get("content") or "")
+                vec = (ctx.embed_fn or stub_embedding)(content)
+            scored.append((_cosine(query_vec, [float(x) for x in vec]), raw))
+        scored.sort(key=lambda t: t[0], reverse=True)
+        cases = [_note_from_memory_raw(raw, score) for score, raw in scored[:cap]]
+        return {
+            "count": len(cases),
+            "cases": cases,
+            "guardrail": (
+                "Similar resolved cases are a prior. Bias root_cause and "
+                "suggested_action toward the pinned enums only if this break's evidence agrees."
+            ),
+        }
+
+    stmt = select(AgentMemory).where(AgentMemory.audit_id.isnot(None))
+    try:
+        stmt = stmt.order_by(AgentMemory.embedding.cosine_distance(query_vec)).limit(max(cap * 4, 20))
+        rows = list(ctx.session.scalars(stmt).all())
+    except Exception:  # noqa: BLE001
+        logger.warning("pgvector search_similar_breaks failed; falling back to recency")
+        stmt = (
+            select(AgentMemory)
+            .where(AgentMemory.audit_id.isnot(None))
+            .order_by(AgentMemory.created_at.desc())
+            .limit(max(cap * 4, 20))
+        )
+        rows = list(ctx.session.scalars(stmt).all())
+
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        facts = row.facts if isinstance(row.facts, dict) else {}
+        if not _facts_match(facts, break_type=btype, symbol=ticker, desk=desk_code):
+            continue
+        filtered.append(_note_from_orm(row))
+        if len(filtered) >= cap:
+            break
+    return {
+        "count": len(filtered),
+        "cases": filtered,
+        "guardrail": (
+            "Similar resolved cases are a prior. Bias root_cause and "
+            "suggested_action toward the pinned enums only if this break's evidence agrees."
+        ),
     }
 
 
@@ -572,6 +715,7 @@ TOOL_HANDLERS: dict[str, Callable[..., dict[str, Any]]] = {
     "get_market_session_info": get_market_session_info,
     "get_trade_history": get_trade_history,
     "get_similar_resolved_breaks": get_similar_resolved_breaks,
+    "search_similar_breaks": search_similar_breaks,
     "get_desk_metadata": get_desk_metadata,
     "get_raw_records": get_raw_records,
     "get_relevant_memory": get_relevant_memory,
@@ -609,6 +753,8 @@ def summarize_tool_result(name: str, result: dict[str, Any]) -> str:
         return f"{result.get('symbol')}: {result.get('count', 0)} normalized trade(s)"
     if name == "get_similar_resolved_breaks":
         return f"{result.get('count', 0)} similar resolved break(s)"
+    if name == "search_similar_breaks":
+        return f"{result.get('count', 0)} similar human-resolved case(s) (prior only)"
     if name == "get_desk_metadata":
         if "desks" in result:
             return f"{len(result['desks'])} desk(s) in catalog"
@@ -698,6 +844,30 @@ def bedrock_tool_specs() -> list[dict[str, Any]]:
                             "break_type": {"type": "string"},
                             "symbol": {"type": "string"},
                             "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                        },
+                    }
+                },
+            }
+        },
+        {
+            "toolSpec": {
+                "name": "search_similar_breaks",
+                "description": (
+                    "Top-k similar human Approve/Reject cases from agent_memory "
+                    "(pgvector). Hypothesis only — bias pinned root_cause / "
+                    "suggested_action enums if evidence agrees."
+                ),
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "required": ["break_type"],
+                        "additionalProperties": False,
+                        "properties": {
+                            "break_type": {"type": "string"},
+                            "symbol": {"type": "string"},
+                            "desk": {"type": "string"},
+                            "query_text": {"type": "string"},
+                            "limit": {"type": "integer", "minimum": 1, "maximum": 20},
                         },
                     }
                 },

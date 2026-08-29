@@ -1,38 +1,80 @@
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ApiError, getBreaks } from "../api/client";
-import { BREAK_STATUSES, BREAK_TYPES, type BreakListItem, type BreakSortField, type SortOrder } from "../api/types";
+import { STATUS_FILTER_OPTIONS, type BreakListItem, type BreakSortField, type SortOrder } from "../api/types";
 import { BreaksTable } from "../components/BreaksTable";
+import { DateRangeFilter } from "../components/DateRangeFilter";
 import { labelize } from "../lib/format";
 
 const PAGE_SIZE = 25;
 
+function isSortField(value: string | null): value is BreakSortField {
+  return (
+    value === "break_type" ||
+    value === "status" ||
+    value === "desk" ||
+    value === "symbol" ||
+    value === "trade_date" ||
+    value === "notional"
+  );
+}
+
 export function Breaks() {
-  const [desk, setDesk] = useState("");
-  const [symbol, setSymbol] = useState("");
-  const [breakType, setBreakType] = useState("");
-  const [tradeDate, setTradeDate] = useState("");
-  const [status, setStatus] = useState("open");
-  const [sort, setSort] = useState<BreakSortField>("trade_date");
-  const [order, setOrder] = useState<SortOrder>("desc");
-  const [page, setPage] = useState(1);
+  const [params, setParams] = useSearchParams();
+  const desk = params.get("desk") ?? "";
+  const symbol = params.get("symbol") ?? "";
+  const breakType = params.get("break_type") ?? "";
+  const fromDate = params.get("from_date") ?? "";
+  const toDate = params.get("to_date") ?? "";
+  const statusRaw = params.get("status");
+  const status = statusRaw && statusRaw.length > 0 ? statusRaw : "open";
+  const sortParam = params.get("sort");
+  const sort: BreakSortField = isSortField(sortParam) ? sortParam : "trade_date";
+  const order: SortOrder = params.get("order") === "asc" ? "asc" : "desc";
+  const page = Math.max(1, Number(params.get("page") || "1") || 1);
+
   const [items, setItems] = useState<BreakListItem[]>([]);
   const [total, setTotal] = useState(0);
+  const [typeOptions, setTypeOptions] = useState<string[]>([]);
+  const [othersTypes, setOthersTypes] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [reconTick, setReconTick] = useState(0);
+
+  useEffect(() => {
+    function onReconComplete(): void {
+      setReconTick((n) => n + 1);
+    }
+    window.addEventListener("recon:complete", onReconComplete);
+    return () => window.removeEventListener("recon:complete", onReconComplete);
+  }, []);
+
+  function patchParams(updates: Record<string, string | null>, resetPage = true) {
+    const next = new URLSearchParams(params);
+    for (const [key, value] of Object.entries(updates)) {
+      if (value === null || value === "") next.delete(key);
+      else next.set(key, value);
+    }
+    if (resetPage) {
+      if (updates.page === undefined) next.delete("page");
+    }
+    setParams(next, { replace: true });
+  }
 
   const query = useMemo(
     () => ({
       desk: desk.trim() || undefined,
       symbol: symbol.trim() || undefined,
       break_type: breakType || undefined,
-      trade_date: tradeDate || undefined,
-      status: status || undefined,
+      from_date: fromDate || undefined,
+      to_date: toDate || undefined,
+      status,
       sort,
       order,
       page,
       page_size: PAGE_SIZE,
     }),
-    [desk, symbol, breakType, tradeDate, status, sort, order, page],
+    [desk, symbol, breakType, fromDate, toDate, status, sort, order, page],
   );
 
   useEffect(() => {
@@ -43,6 +85,8 @@ export function Breaks() {
         if (cancelled) return;
         setItems(res.items);
         setTotal(res.total);
+        setTypeOptions(res.break_type_options ?? []);
+        setOthersTypes(res.others_break_types ?? []);
         setError(null);
       })
       .catch((err: unknown) => {
@@ -56,7 +100,7 @@ export function Breaks() {
     return () => {
       cancelled = true;
     };
-  }, [query]);
+  }, [query, reconTick]);
 
   const pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -65,7 +109,10 @@ export function Breaks() {
       <div className="page-header">
         <div>
           <h1>Breaks</h1>
-          <p>Filter by desk, symbol, type, and trade date. Click a column to sort. Open the row for the side-by-side diff.</p>
+          <p>
+            Filter by desk, symbol, type, status (open / resolved / rejected / overridden), and
+            trade-date range. Filters are kept in the URL. Click a column to sort.
+          </p>
         </div>
       </div>
       {error && <div className="banner error">{error}</div>}
@@ -76,10 +123,7 @@ export function Breaks() {
             <input
               id="desk"
               value={desk}
-              onChange={(e) => {
-                setDesk(e.target.value);
-                setPage(1);
-              }}
+              onChange={(e) => patchParams({ desk: e.target.value })}
               placeholder="e.g. EQ-US"
             />
           </div>
@@ -88,10 +132,7 @@ export function Breaks() {
             <input
               id="symbol"
               value={symbol}
-              onChange={(e) => {
-                setSymbol(e.target.value);
-                setPage(1);
-              }}
+              onChange={(e) => patchParams({ symbol: e.target.value.toUpperCase() })}
               placeholder="AAPL"
             />
           </div>
@@ -100,49 +141,45 @@ export function Breaks() {
             <select
               id="break_type"
               value={breakType}
-              onChange={(e) => {
-                setBreakType(e.target.value);
-                setPage(1);
-              }}
+              onChange={(e) => patchParams({ break_type: e.target.value })}
             >
               <option value="">All</option>
-              {BREAK_TYPES.map((t) => (
+              {typeOptions.map((t) => (
                 <option key={t} value={t}>
                   {labelize(t)}
                 </option>
               ))}
+              {breakType &&
+              breakType !== "__others__" &&
+              !typeOptions.includes(breakType) ? (
+                <option value={breakType}>{labelize(breakType)}</option>
+              ) : null}
+              {othersTypes.length > 0 ? (
+                <option value="__others__">Others</option>
+              ) : null}
             </select>
-          </div>
-          <div className="field">
-            <label htmlFor="trade_date">Trade date</label>
-            <input
-              id="trade_date"
-              type="date"
-              value={tradeDate}
-              onChange={(e) => {
-                setTradeDate(e.target.value);
-                setPage(1);
-              }}
-            />
           </div>
           <div className="field">
             <label htmlFor="status">Status</label>
             <select
               id="status"
-              value={status}
-              onChange={(e) => {
-                setStatus(e.target.value);
-                setPage(1);
-              }}
+              value={STATUS_FILTER_OPTIONS.some((opt) => opt.value === status) ? status : "open"}
+              onChange={(e) => patchParams({ status: e.target.value })}
             >
-              <option value="">All</option>
-              {BREAK_STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s}
+              {STATUS_FILTER_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
                 </option>
               ))}
             </select>
           </div>
+          <DateRangeFilter
+            fromDate={fromDate}
+            toDate={toDate}
+            onChange={(from, to) => {
+              patchParams({ from_date: from, to_date: to });
+            }}
+          />
         </div>
         {loading ? (
           <p className="loading-state">Loading…</p>
@@ -152,18 +189,18 @@ export function Breaks() {
             sort={sort}
             order={order}
             onSort={(field) => {
-              if (field === sort) {
-                setOrder((prev) => (prev === "asc" ? "desc" : "asc"));
-              } else {
-                setSort(field);
-                setOrder(field === "trade_date" || field === "notional" ? "desc" : "asc");
-              }
-              setPage(1);
+              const nextOrder =
+                field === sort ? (order === "asc" ? "desc" : "asc") : field === "trade_date" || field === "notional" ? "desc" : "asc";
+              patchParams({ sort: field, order: nextOrder });
             }}
           />
         )}
         <div className="pager">
-          <button className="btn" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+          <button
+            className="btn"
+            disabled={page <= 1}
+            onClick={() => patchParams({ page: String(page - 1) }, false)}
+          >
             Previous
           </button>
           <span>
@@ -172,7 +209,7 @@ export function Breaks() {
           <button
             className="btn"
             disabled={page >= pages}
-            onClick={() => setPage((p) => p + 1)}
+            onClick={() => patchParams({ page: String(page + 1) }, false)}
           >
             Next
           </button>

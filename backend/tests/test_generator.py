@@ -36,6 +36,7 @@ from backend.data.generator import (
     closed_market_dates,
     generate_corporate_action_breaks,
     generate_trades,
+    last_cached_us_session,
     last_completed_us_session,
     load_market_cache,
     next_business_day,
@@ -89,8 +90,7 @@ def _bar(
     }
 
 
-@pytest.fixture
-def tiny_cache(tmp_path: Path) -> Path:
+def build_tiny_cache(tmp_path: Path) -> Path:
     """Minimal on-disk cache matching fetch_market_data layout."""
     cache = tmp_path / "cache"
     bars_dir = cache / "bars"
@@ -144,6 +144,11 @@ def tiny_cache(tmp_path: Path) -> Path:
     )
     write_parquet(calendar, cache / "calendar.parquet")
     return cache
+
+
+@pytest.fixture
+def tiny_cache(tmp_path: Path) -> Path:
+    return build_tiny_cache(tmp_path)
 
 
 @pytest.fixture
@@ -252,8 +257,20 @@ def test_generate_trades_schemas_and_clean_pairs(memory_cache: MarketCache) -> N
     assert b["quantity"] == d["qty"]
     assert b["price"] == d["px"]
     assert b["trade_date"] == d["trade_date"]
+    assert b["executed_at"] == d["executed_at"]
+    assert pd.notna(b["executed_at"])
     assert b["settlement_date"] == d["settle_date"]
     assert b["side"] == d["side"]
+    exec_at = pd.Timestamp(b["executed_at"])
+    assert exec_at.tzinfo is not None
+    ny = exec_at.tz_convert("America/New_York")
+    minutes = ny.hour * 60 + ny.minute
+    assert 9 * 60 + 30 <= minutes < 16 * 60
+    settle_at = pd.Timestamp(b["settlement_datetime"])
+    settle_ny = settle_at.tz_convert("America/New_York")
+    assert settle_ny.hour == 16
+    assert settle_ny.minute == 0
+    assert str(b["settlement_datetime"])[:10] == b["settlement_date"]
 
 
 def test_injected_break_types_present(memory_cache: MarketCache) -> None:
@@ -568,6 +585,41 @@ def test_last_completed_us_session_skips_weekend_and_holiday() -> None:
     days = prior_us_sessions(3, as_of=date(2024, 6, 3), closed=closed)
     assert days[-1] == date(2024, 6, 3)
     assert date(2024, 5, 27) not in days
+
+
+def test_last_cached_us_session_lags_to_newest_bars() -> None:
+    """The provider publishes T-1, so the just-closed session has no bars yet."""
+    bars = pd.DataFrame(
+        {
+            "ticker": ["AAPL", "AAPL", "MSFT"],
+            "date": ["2024-05-30", "2024-05-31", "2024-05-31"],
+        }
+    )
+    # 2024-06-03 is a Monday; 05-31 is the newest session actually cached.
+    assert last_cached_us_session(bars, date(2024, 6, 3), set()) == date(2024, 5, 31)
+
+
+def test_last_cached_us_session_ignores_future_and_closed_sessions() -> None:
+    bars = pd.DataFrame(
+        {
+            "ticker": ["AAPL", "AAPL", "AAPL"],
+            "date": ["2024-05-24", "2024-05-27", "2024-06-10"],
+        }
+    )
+    closed = {date(2024, 5, 27)}
+    # 05-27 is a holiday and 06-10 is past as_of, so 05-24 is the anchor.
+    assert last_cached_us_session(bars, date(2024, 5, 28), closed) == date(2024, 5, 24)
+
+
+def test_last_cached_us_session_raises_on_empty_cache() -> None:
+    with pytest.raises(ValueError, match="no bars"):
+        last_cached_us_session(pd.DataFrame(), date(2024, 6, 3), set())
+    with pytest.raises(ValueError, match="no session on or before"):
+        last_cached_us_session(
+            pd.DataFrame({"ticker": ["AAPL"], "date": ["2024-07-01"]}),
+            date(2024, 6, 3),
+            set(),
+        )
 
 
 def test_dated_generate_is_idempotent(memory_cache: MarketCache) -> None:

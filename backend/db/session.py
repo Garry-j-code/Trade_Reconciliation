@@ -40,6 +40,38 @@ def ensure_pgvector(engine: Engine) -> None:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
 
 
+def ensure_agent_memory_table(engine: Engine) -> None:
+    """Create ``agent_memory`` if a pre-step-6 RDS is missing it; add HITL columns."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS agent_memory (
+                    memory_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    scope TEXT NOT NULL,
+                    memory_type TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    embedding VECTOR(1536),
+                    source_break_ids UUID[],
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """
+            )
+        )
+        conn.execute(
+            text("ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS audit_id UUID")
+        )
+        conn.execute(
+            text("ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS facts JSONB")
+        )
+        conn.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_agent_memory_audit_id "
+                "ON agent_memory (audit_id) WHERE audit_id IS NOT NULL"
+            )
+        )
+
+
 def ensure_agent_schema_patches(engine: Engine) -> None:
     """Add columns introduced after the initial create_all (idempotent)."""
     with engine.begin() as conn:
@@ -49,6 +81,33 @@ def ensure_agent_schema_patches(engine: Engine) -> None:
                 "ADD COLUMN IF NOT EXISTS inferred BOOLEAN NOT NULL DEFAULT FALSE"
             )
         )
+        for table in (
+            "raw_broker_trades",
+            "raw_desk_trades",
+            "normalized_trades",
+            "breaks",
+        ):
+            conn.execute(
+                text(
+                    f"ALTER TABLE {table} "
+                    "ADD COLUMN IF NOT EXISTS executed_at TIMESTAMPTZ"
+                )
+            )
+        for table in (
+            "raw_broker_trades",
+            "raw_desk_trades",
+            "normalized_trades",
+        ):
+            conn.execute(
+                text(
+                    f"ALTER TABLE {table} "
+                    "ADD COLUMN IF NOT EXISTS settlement_datetime TIMESTAMPTZ"
+                )
+            )
+    try:
+        ensure_agent_memory_table(engine)
+    except Exception as exc:  # noqa: BLE001 — sqlite / missing extension
+        logger.warning("Could not patch agent_memory: %s", exc)
 
 
 def ensure_audit_log_survives_break_delete(engine: Engine) -> None:

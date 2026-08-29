@@ -64,3 +64,6 @@ frontend/dist/
 
 # Accidental root npm lock (frontend has its own)
 /package-lock.json
+
+# Internal notes — not git, not deployed
+docs/
