@@ -4,12 +4,6 @@ Operations platform for **two-sided trade reconciliation**: a clearing-broker fe
 
 **Live demo:** [https://d1a8rtzx54qkw.cloudfront.net](https://d1a8rtzx54qkw.cloudfront.net) (sign-in required).
 
-<!-- Optional banner — save as assets/screenshots/hero.png -->
-
-*Banner placeholder — `assets/screenshots/hero.png`*
-
-<!-- ![Trade Reconciliation console](assets/screenshots/hero.png) -->
-
 <br>
 
 ## Overview
@@ -25,13 +19,9 @@ The stack is a full web application — React console, FastAPI API, PostgreSQL, 
 
 ## Screenshots
 
-Add PNG or WebP files under [`assets/screenshots/`](assets/screenshots/) (roughly 1200–1600px wide). Drop each file in place, then uncomment the matching `![...](...)` line below.
-
 ### Dashboard
 
 Summary metrics, break-type chart, and date-range filter.
-
-*Screenshot placeholder — `assets/screenshots/dashboard.png`*
 
 ![Dashboard](assets/screenshots/dashboard.png)
 
@@ -41,8 +31,6 @@ Summary metrics, break-type chart, and date-range filter.
 
 Sortable break list with status, type, and date filters.
 
-*Screenshot placeholder — `assets/screenshots/breaks.png`*
-
 ![Breaks list](assets/screenshots/breaks.png)
 
 <br>
@@ -50,8 +38,6 @@ Sortable break list with status, type, and date filters.
 ### Break detail
 
 Broker vs desk comparison, agent suggestion, and approve / reject / override.
-
-*Screenshot placeholder — `assets/screenshots/break-detail.png`*
 
 ![Break detail](assets/screenshots/break-detail.png)
 
@@ -61,8 +47,6 @@ Broker vs desk comparison, agent suggestion, and approve / reject / override.
 
 Analyst chat with agent evidence and suggested resolution.
 
-*Screenshot placeholder — `assets/screenshots/investigate.png`*
-
 ![Investigate chat](assets/screenshots/investigate.png)
 
 <br>
@@ -70,8 +54,6 @@ Analyst chat with agent evidence and suggested resolution.
 ### Sign in
 
 Hosted login (Cognito).
-
-*Screenshot placeholder — `assets/screenshots/sign-in.png`*
 
 ![Sign in](assets/screenshots/sign-in.png)
 
