@@ -1,16 +1,91 @@
 # Trade Reconciliation
 
-Client-style ops product for **two-sided trade reconciliation**: a clearing-broker file and an internal desk blotter are matched with a deterministic pipeline. Mismatches (**breaks**) go to an AI investigator that proposes a resolution; a human always approves before books change.
+Operations platform for **two-sided trade reconciliation**: a clearing-broker feed is matched against an internal desk blotter using a deterministic rules engine. When records do not align, the system surfaces **breaks** for review. An AI assistant investigates each break and proposes a resolution; a human analyst always approves before any book change is applied.
 
-This is a full product surface — FastAPI + React console, Cognito login, weekday recon, Bedrock agent — not a notebook demo. Trades are **synthetic** (no firm publishes internal blotters) but generated against **real** market data: prices, volumes, calendars, and corporate actions. Split-driven quantity mismatches are real, not injected.
+**Live demo:** [https://d1a8rtzx54qkw.cloudfront.net](https://d1a8rtzx54qkw.cloudfront.net) (sign-in required).
 
-**Hosted console:** `https://d1a8rtzx54qkw.cloudfront.net` (Cognito). **Repo is private** so infra identifiers stay off the public internet; make it public later if you want a portfolio link.
+<!-- Optional banner — save as assets/screenshots/hero.png -->
 
-## Current phase
+*Banner placeholder — `assets/screenshots/hero.png`*
 
-**Product hardening (step 9).** CloudFront + Cognito, FastAPI on a **t4g.micro** in the RDS VPC, weekday automated blotter, Bedrock investigate on rematch and after EOD. IaC is **AWS CDK (Python)** in [`infra/`](infra/README.md). Internal design notes live under `docs/` locally (gitignored — not on GitHub).
+<!-- ![Trade Reconciliation console](assets/screenshots/hero.png) -->
 
-Large Parquet caches (`backend/data/cache/`, generated/normalized/matched trades) are **gitignored**. Re-fetch or restore from S3 (`trade-recon-market-data-gagan-8948-us-east-1`); do not commit bars.
+<br>
+
+## Overview
+
+The stack is a full web application — React console, FastAPI API, PostgreSQL, and Amazon Bedrock — deployed on AWS with infrastructure defined in **CDK (Python)** ([`infra/`](infra/README.md)). Weekday end-of-day jobs fetch market data, load trades, rematch the book, and queue AI investigation for new breaks.
+
+| Layer | Role |
+|---|---|
+| **Pipeline** | Deterministic matching and break detection (no LLM) |
+| **Agent** | Investigates breaks and writes structured suggestions only |
+| **Console** | Dashboard, break triage, human approve / reject / override |
+| **Infra** | CloudFront, Cognito, EC2 API, RDS, S3 market-data cache, scheduled jobs |
+
+## Screenshots
+
+Add PNG or WebP files under [`assets/screenshots/`](assets/screenshots/) (roughly 1200–1600px wide). Drop each file in place, then uncomment the matching `![...](...)` line below.
+
+### Dashboard
+
+Summary metrics, break-type chart, and date-range filter.
+
+*Screenshot placeholder — `assets/screenshots/dashboard.png`*
+
+![Dashboard](assets/screenshots/dashboard.png)
+
+<br>
+
+### Breaks
+
+Sortable break list with status, type, and date filters.
+
+*Screenshot placeholder — `assets/screenshots/breaks.png`*
+
+![Breaks list](assets/screenshots/breaks.png)
+
+<br>
+
+### Break detail
+
+Broker vs desk comparison, agent suggestion, and approve / reject / override.
+
+*Screenshot placeholder — `assets/screenshots/break-detail.png`*
+
+![Break detail](assets/screenshots/break-detail.png)
+
+<br>
+
+### Investigate
+
+Analyst chat with agent evidence and suggested resolution.
+
+*Screenshot placeholder — `assets/screenshots/investigate.png`*
+
+![Investigate chat](assets/screenshots/investigate.png)
+
+<br>
+
+### Sign in
+
+Hosted login (Cognito).
+
+*Screenshot placeholder — `assets/screenshots/sign-in.png`*
+
+![Sign in](assets/screenshots/sign-in.png)
+
+<br>
+
+## Data approach
+
+In production, a firm such as **EY** would ingest **real client trades** — the clearing-broker file and the internal desk blotter received from the engagement. That is the intended operating model: the same normalize → match → investigate → approve flow, but on live client data inside the firm’s environment.
+
+This repository uses **synthetic broker and desk trades** generated from **real public market data** (EOD prices, volumes, calendars, and corporate actions via Massive). That choice is deliberate: as an independent build, real client trade files cannot be shared outside the firm. Synthetic data lets the full product — matching, breaks, AI suggestions, and human-in-the-loop approval — be developed and demonstrated without confidential client information.
+
+Corporate-action scenarios (for example, split-driven quantity differences) use **real split factors** from the market-data cache, not arbitrary injected noise. The ingestion path is the same whether data is synthetic or real: files are normalized into one canonical schema, then matched.
+
+Large Parquet caches (`backend/data/cache/`, generated/normalized/matched trades) are **gitignored**. Restore from your S3 market-data bucket or run `fetch-market-data` locally; do not commit bars.
 
 ## Setup
 
@@ -86,13 +161,14 @@ Minimum IAM on that bucket/prefix: `s3:CreateBucket` (once), then `s3:ListBucket
 
 The pipeline and agent must read this cache only — they never call live market APIs.
 
-## Generate synthetic trades
+## Generate synthetic trades (demo data)
 
-Builds clearing-broker and internal-desk legs from the **cached** Parquet (no live API). Injects non-corporate-action breaks at controlled rates; corporate-action quantity mismatches use **real split factors** from `splits.parquet` (broker adjusted, desk lag). Writes Parquet under `backend/data/generated/` plus a ground-truth manifest. On the API EC2 (`/opt/trade-recon/app`, or `TRADE_RECON_DELETE_GENERATED=1`), weekday blotter **deletes** those files after RDS load; the next run recreates them. Laptop blotter without that flag keeps `generated/`.
+For this demo, builds clearing-broker and internal-desk legs from the **cached** Parquet (no live API). In a client deployment, this step is replaced by ingesting the firm’s actual broker and desk files into the same canonical schema. The generator injects non-corporate-action breaks at controlled rates; corporate-action quantity mismatches use **real split factors** from `splits.parquet` (broker adjusted, desk lag). Writes Parquet under `backend/data/generated/` plus a ground-truth manifest. On the hosted API server, the weekday blotter **deletes** those files after RDS load; the next run recreates them.
 
 ```bash
 # After fetch-market-data has populated the cache
 uv run generate-trades
+uv run generate-trades --trade-date 2026-08-21   # one US session
 uv run python -m backend.data.generator
 
 # Smaller / reproducible run
@@ -113,7 +189,7 @@ backend/data/generated/
 
 Maps broker + desk raw columns into one canonical frame (`source` = `broker` | `desk`). Writes Parquet under `backend/data/normalized/`. When `DATABASE_URL` is set (default: Amazon RDS), also loads raw + normalized rows into Postgres.
 
-Canonical columns: `trade_id`, `source`, `symbol`, `trade_date`, `settlement_date`, `side`, `quantity`, `price`, `currency`, `account` (account_id | desk_code), `executing_party` (venue | trader), `pair_id`, `raw_payload`.
+Canonical columns: `trade_id`, `source`, `symbol`, `trade_date`, `executed_at`, `settlement_date`, `settlement_datetime`, `side`, `quantity`, `price`, `currency`, `account` (account_id | desk_code), `executing_party` (venue | trader), `pair_id`, `raw_payload`.
 
 ```bash
 # After generate-trades
@@ -155,7 +231,7 @@ Core unit tests do not require a database. An optional integration test runs onl
 
 ## Local API (FastAPI)
 
-Runs on your machine and talks to RDS via `DATABASE_URL`. CloudFront hosts the static UI (CDK); API Gateway + Mangum packaging is Phase 2 (`infra/README.md`, `backend/api/lambda_handler.py`). Interactive docs: http://127.0.0.1:8000/docs
+Runs on your machine and talks to RDS via `DATABASE_URL`. The hosted UI is served from CloudFront (CDK). Interactive docs: http://127.0.0.1:8000/docs
 
 ```bash
 uv run serve-api
@@ -284,40 +360,23 @@ CloudFront is the only public HTTPS entry. EC2:80 accepts the CloudFront origin-
 
 **Why Lambda?** EventBridge fires on a schedule; a small **trigger Lambda** starts long jobs on EC2 via **SSM** (daily blotter, memory backfill) or can `POST /api/recon/run` with a scheduler secret. The recon pipeline itself runs on EC2, not in Lambda. Scheduled jobs target the API instance by **Name tag** so they survive instance replacement.
 
-## How a client operates
+<!-- Optional static diagram — save as assets/screenshots/architecture.png -->
 
-1. Open `https://d1a8rtzx54qkw.cloudfront.net` and sign in (email/password). Demo analyst is seeded by CDK; get the password from SSM `/trade-recon/demo-analyst-password` (SecureString) and **change it** (header menu → Change password).
+*Architecture diagram placeholder — `assets/screenshots/architecture.png`*
+
+<!-- ![AWS architecture](assets/screenshots/architecture.png) -->
+
+<br>
+
+## Day-to-day workflow
+
+1. Sign in to the hosted console. A demo analyst account is provisioned at deploy time; operators retrieve the initial password from SSM (`/trade-recon/demo-analyst-password`) and should **change it** under the header menu.
 2. Dashboard shows pair-level match rate, breaks by **display type** (agent `root_cause`; Unclassified until investigated; Others for rare types), notional at risk, and recent open breaks — filter by date range as needed.
 3. **Run reconciliation** rematches the book already in **RDS** (not `generated/*.parquet`), then queues Bedrock investigate in the background — the UI polls until investigation finishes. Weekdays **21:30 UTC**: EventBridge → Lambda → SSM `daily-blotter` on EC2 (fetch Massive → S3 cache → generate/ingest/match; deletes `generated/*.parquet` after RDS load).
 4. Open a break, use the bottom-right **Investigate** chat (optional analyst note; agent writes `resolution_suggestions` only), then **Approve** (applies book fix when the suggestion calls for it), **Reject**, or **Override** with a note. Every decision writes `audit_log` and upserts `agent_memory` (Titan embed; row kept if embed fails). Evidence is shown in plain English, not internal tool names.
 5. Daily **07:00 UTC**: EventBridge → Lambda → SSM memory backfill on EC2. Embeds any HITL decisions that missed approve-time write, then **skips** when caught up. Does **not** run a nightly Converse job.
 
 Local development: `AUTH_DISABLED=true` in `.env`, `uv run serve-api`, `cd frontend && npm run dev`. Hosted UI always requires Cognito.
-
-## Cost (us-east-1, order-of-magnitude)
-
-| Resource | Typical monthly | Notes |
-|---|---|---|
-| RDS `trade-recon-postgres` | existing instance (often ~$12–25) | **Reused**, not created by CDK |
-| EC2 t4g.micro | ~$6 on-demand | Free-tier hours may apply |
-| CloudFront + frontend S3 | pennies | Portfolio traffic |
-| Cognito | $0 | 50k MAU free tier; one user |
-| Lambda + EventBridge + SSM | ~$0 | Short trigger invocations; long work on EC2 |
-| Secrets Manager | ~$0.40 per secret | Demo password + scheduler secret |
-| Bedrock Nova Lite | on-demand, only when investigating | Titan embed: one small vector per human decision |
-| Bedrock Titan Embed | pennies | Approve-time + 07:00 backfill if behind |
-| NAT Gateway | **$0** | Not deployed |
-| Second RDS | **$0** | Not created |
-
-### Full stack teardown (still keeps RDS + market-data S3)
-
-```bash
-export AWS_PROFILE=trade-recon-8948
-cd infra && source .venv/bin/activate
-cdk destroy TradeReconFrontend TradeReconEc2Api TradeReconPipeline TradeReconAuth --force
-```
-
-There is **no NAT Gateway** to forget.
 
 ## Deploy (AWS CDK)
 
@@ -345,14 +404,7 @@ Tear down (does **not** destroy RDS or the market-data bucket):
 cdk destroy TradeReconFrontend TradeReconEc2Api TradeReconPipeline TradeReconAuth --force
 ```
 
-Full commands and security notes: [`infra/README.md`](infra/README.md).
-
-## Security notes
-
-- Cognito issues JWTs; FastAPI rejects unauthenticated `/api/*` with 401. `/health` is public for ops.
-- RDS is not on `0.0.0.0/0`. `DATABASE_URL` lives in SSM, not in git or CDK source.
-- EC2 HTTP is not open to the whole internet; use CloudFront.
-- One demo user, not a multi-tenant IdP. Rotate the seeded password after handover.
+Full commands: [`infra/README.md`](infra/README.md).
 
 ## Tests
 
@@ -362,7 +414,7 @@ Unit tests mock HTTP / yfinance and use on-disk fixtures for the generator / nor
 uv run pytest
 ```
 
-## Docs
+## Further reading
 
-- `project_plan.md` — full design
-- `AGENTS.md` — operational guardrails for coding agents
+- [`project_plan.md`](project_plan.md) — architecture and design record
+- [`infra/README.md`](infra/README.md) — AWS deployment
